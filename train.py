@@ -95,7 +95,7 @@ def test_step(batch, state, key, model):
 
     terms = {
         'loss': loss,
-        '_premetrics': compute_premetrics(mask, pred),
+        'val_premetrics': compute_premetrics(mask, pred),
     }
 
     # Convert from normalized to to pixel coordinates
@@ -159,14 +159,11 @@ if __name__ == '__main__':
             # Validate
             val_key = persistent_val_key
             val_metrics = defaultdict(list)
-            for step, batch in enumerate(data_val):
+            for step_test, batch in enumerate(data_val):
                 val_key, subkey = jax.random.split(val_key)
                 metrics = test_step(batch, state, subkey, net)
 
                 for m in metrics:
                   val_metrics[m].append(metrics[m])
-
-                # out = jax.tree_map(lambda x: x[0], out) # Select first example from batch
-                # logging.log_anim(out, f"Animated_{mode}/{step}", epoch)
 
             logging.log_metrics(val_metrics, 'val', step)

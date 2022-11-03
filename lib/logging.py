@@ -19,7 +19,7 @@ from .utils import min_pool
 from .metrics import compute_metrics
 
 
-def log_metrics(metrics, prefix, epoch, do_print=True, do_wandb=True):
+def log_metrics(metrics, prefix, step, do_print=True, do_wandb=True):
     logged_metrics = {}
     for key, values in metrics.items():
         if key.endswith('_premetrics'):
@@ -31,7 +31,7 @@ def log_metrics(metrics, prefix, epoch, do_print=True, do_wandb=True):
           logged_metrics[key] = np.mean(values)
 
     if do_wandb:
-        wandb.log({f"{prefix}/{m}": logged_metrics[m] for m in logged_metrics}, step=epoch)
+        wandb.log({f"{prefix}/{k}": v for k, v in logged_metrics.items()}, step=step)
     if do_print:
         print(f"{prefix}/metrics")
         print(", ".join(f"{k}: {v:.3f}" for k, v in logged_metrics.items()))
