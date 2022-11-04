@@ -49,7 +49,7 @@ def train_step(labelled, unlabelled, state, key, model):
     distorted = distort({'Sentinel2': img_u, 'Mask': pred_u}, aug_key_3)
     img_d  = distorted['Sentinel2']
     mask_d = jax.nn.sigmoid(distorted['Mask'])
-    mask_d = jnp.where( mask_d > 0.8,  1,
+    mask_d = jnp.where( mask_d > 0.5,  1,
              jnp.where( mask_d < 0.2,  0,
                                       -1))
     mask_d_counts = jnp.bincount(mask_d.reshape(-1) + 1, length=3) / np.prod(mask_d.shape)
