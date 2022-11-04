@@ -24,3 +24,7 @@ def focal_loss(y_true, y_pred):
     loss = bce_loss * (1 - p_true) ** 2.
     loss = jnp.where(ignore, 0., loss)
     return jnp.mean(loss)
+
+
+def noop(y_true, y_pred):
+  return 0
