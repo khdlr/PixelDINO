@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, ConcatDataset, Dataset
 from einops import rearrange
 from tqdm import tqdm
 from pathlib import Path
+from skimage.measure import find_contours
 from .utils import shuffle_loop, deterministic_loop
 
 
@@ -27,9 +28,15 @@ class NCDataset(Dataset):
     self.scale = {'Sentinel2': 1/10000}
 
     if self.sampling_mode == 'targets_only':
-      is_ever_positive = (self.data.Mask == 1).squeeze('mask_band')
-      # TODO: Rework this into a more sensible sampling strategy
-      self.positive_points = np.argwhere(is_ever_positive.values)
+      targets = (self.data.Mask == 1).squeeze('mask_band').values
+      # Find Bounding boxes of targets
+      contours = find_contours(targets)
+
+      self.bboxes = []
+      for contour in contours:
+        ymin, xmin = np.floor(contour.min(axis=0)).astype(int)
+        ymax, xmax = np.ceil(contour.max(axis=0)).astype(int)
+        self.bboxes.append([ymin, xmin, ymax, xmax])
 
   def __getitem__(self, idx):
     if self.sampling_mode == 'deterministic':
@@ -40,13 +47,26 @@ class NCDataset(Dataset):
       y0 = int(torch.randint(0, self.H - self.tile_size, ()))
       x0 = int(torch.randint(0, self.W - self.tile_size, ()))
     elif self.sampling_mode == 'targets_only':
-      point_idx = int(torch.randint(0, self.positive_points.shape[0], ()))
-      contained_y, contained_x = self.positive_points[point_idx]
+      bbox_idx = int(torch.randint(0, len(self.bboxes), ()))
+      ymin, xmin, ymax, xmax = self.bboxes[bbox_idx]
 
-      y0 = max(0, min(self.H - self.tile_size,
-              contained_y - int(torch.randint(0, self.tile_size, ()))))
-      x0 = max(0, min(self.W - self.tile_size,
-              contained_x - int(torch.randint(0, self.tile_size, ()))))
+      y_start = max(0, ymin - self.tile_size)
+      y_end   = min(self.H - self.tile_size, ymax)
+
+      x_start = max(0, xmin - self.tile_size)
+      x_end   = min(self.W - self.tile_size, xmax )
+
+      if y_start >= y_end or x_start >= x_end:
+        print("Nasty BBox!")
+        print(f'y range: {ymin} -- {ymax}')
+        print(f'x range: {xmin} -- {xmax}')
+        print('Derived:')
+        print(f'Sample y from [{y_start}, {y_end})')
+        print(f'Sample x from [{x_start}, {x_end})')
+        print(f'Image size: {self.H} x {self.W}')
+
+      y0 = int(torch.randint(y_start, y_end, ()))
+      x0 = int(torch.randint(x_start, x_end, ()))
     else:
       raise ValueError(f'Unsupported tiling mode: {self.sampling_mode!r}')
     y1 = y0 + self.tile_size
