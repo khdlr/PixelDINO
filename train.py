@@ -118,7 +118,7 @@ if __name__ == '__main__':
     data_trn_u = get_loader(config.datasets.train_unlabelled)
     data_val   = get_loader(config.datasets.val)
     
-    sample_data = next(iter(data_trn))
+    sample_data, sample_meta = next(iter(data_trn))
     S, params = models.get_model(sample_data['Sentinel2'])
 
     # Initialize model and optimizer state
@@ -138,8 +138,8 @@ if __name__ == '__main__':
 
     trn_metrics = defaultdict(list)
     for step in tqdm(range(1, 1+config.train.steps)):
-        labelled = next(train_gen)
-        unlabelled = next(train_gen_u)
+        labelled, meta_labelled = next(train_gen)
+        unlabelled, meta_labelled = next(train_gen_u)
 
         train_key, subkey = jax.random.split(train_key)
         terms, state = train_step(labelled, unlabelled, state, subkey, net)
@@ -159,7 +159,7 @@ if __name__ == '__main__':
             # Validate
             val_key = persistent_val_key
             val_metrics = defaultdict(list)
-            for step_test, batch in enumerate(data_val):
+            for step_test, (batch, meta) in enumerate(data_val):
                 val_key, subkey = jax.random.split(val_key)
                 metrics = test_step(batch, state, subkey, net)
 

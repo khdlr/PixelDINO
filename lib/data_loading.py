@@ -16,6 +16,7 @@ from .utils import shuffle_loop, deterministic_loop
 
 class NCDataset(Dataset):
   def __init__(self, netcdf_path, config):
+    self.netcdf_path = netcdf_path
     self.tile_size = config.tile_size
     self.datasets = config.datasets
     self.data = xarray.open_dataset(netcdf_path, cache=False)
@@ -72,12 +73,17 @@ class NCDataset(Dataset):
     y1 = y0 + self.tile_size
     x1 = x0 + self.tile_size
 
+    metadata = {
+      'source_file': self.netcdf_path,
+      'y0': y0, 'x0': x0,
+      'y1': y1, 'x1': x1,
+    }
     tile = {k: self.data[k][:, y0:y1, x0:x1].fillna(0).values for k in self.datasets}
     tile = {k: rearrange(v, 'C H W -> H W C') for k, v in tile.items()}
     for k in tile:
       if k in self.scale:
         tile[k] = (tile[k] * self.scale[k]).clip(0, 1)
-    return tile
+    return tile, metadata
 
 
   def __len__(self):
