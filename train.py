@@ -36,8 +36,8 @@ def get_loss_fn(mode):
 def train_step(labelled, unlabelled, state, key, model):
   _, optimizer = get_optimizer()
 
-  aug_key_1, aug_key_2, aug_key_3 = jax.random.split(key, 3)
-  batch_l = prep(labelled, augment_key=aug_key_1)
+  aug_key_1a, aug_key_1b, aug_key_2, aug_key_3 = jax.random.split(key, 4)
+  batch_l = distort(prep(labelled, augment_key=aug_key_1a), aug_key_1b)
   img_l   = batch_l['Sentinel2']
   mask_l  = batch_l['Mask']
   img_u   = prep(unlabelled, augment_key=aug_key_2)['Sentinel2']
