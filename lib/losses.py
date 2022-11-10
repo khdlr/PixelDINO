@@ -21,7 +21,7 @@ def weighted_bce(y_true, y_pred):
     log_y_true  = jax.nn.log_sigmoid( y_pred)
     log_y_false = jax.nn.log_sigmoid(-y_pred)
 
-    loss = -(50 * y_true * log_y_true + (1-y_true) * log_y_false)
+    loss = -(8 * y_true * log_y_true + (1-y_true) * log_y_false)
     loss = jnp.where(ignore, 0., loss)
     return jnp.mean(loss)
 
