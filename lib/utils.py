@@ -44,9 +44,7 @@ def prep(batch, augment_key=None):
             augmax.HorizontalFlip(),
             augmax.VerticalFlip(),
             augmax.Rotate90(),
-            # augmax.Warp(coarseness=16)
         ]
-    ops += [augmax.ByteToFloat()]
     # if augment: ops += [
     #     augmax.ChannelShuffle(p=0.1),
     #     augmax.Solarization(p=0.1),
@@ -72,11 +70,11 @@ def prep(batch, augment_key=None):
 def distort(batch, augment_key):
     ops = [
         augmax.Rotate(),
-        augmax.Warp(coarseness=16),
+        augmax.Warp(coarseness=16, strength=2),
         augmax.RandomGamma(p=1.),
         augmax.RandomBrightness(p=1.),
         augmax.RandomContrast(p=1.),
-        augmax.GaussianBlur(sigma=7)
+        augmax.GaussianBlur(sigma=2)
     ]
 
     all_types = {
