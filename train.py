@@ -216,14 +216,14 @@ if __name__ == '__main__':
                 pred_img = Image.new("L", (x_max, y_max), 0)
                 pred_draw = ImageDraw.Draw(pred_img)
                 for contour in measure.find_contours(pred[..., 0], 0.5):
-                  mask_draw.polygon([(x,y) for y,x in contour],
+                  pred_draw.polygon([(x,y) for y,x in contour],
                                     fill=0, outline=255, width=3)
                 mask_img = np.asarray(mask_img)
                 pred_img = np.asarray(pred_img)
                 annot = np.stack([
                   mask_img,
+                  pred_img,
                   np.zeros_like(mask_img),
-                  pred_img
                 ], axis=-1)
                 rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
                                           rgb, annot)
