@@ -7,7 +7,8 @@ import jax.numpy as jnp
 import optax
 from functools import partial
 from collections import defaultdict
-from torch.utils.data import DataLoader
+from PIL import Image, ImageDraw
+from skimage import measure
 
 import wandb
 from tqdm import tqdm
@@ -99,7 +100,7 @@ def test_step(batch, state, key, model):
     }
 
     # Convert from normalized to to pixel coordinates
-    return terms
+    return terms, jax.nn.sigmoid(pred)
 
 
 
@@ -159,11 +160,79 @@ if __name__ == '__main__':
             # Validate
             val_key = persistent_val_key
             val_metrics = defaultdict(list)
+            val_outputs = defaultdict(list)
             for step_test, (batch, meta) in enumerate(data_val):
                 val_key, subkey = jax.random.split(val_key)
-                metrics = test_step(batch, state, subkey, net)
+                metrics, preds = test_step(batch, state, subkey, net)
 
                 for m in metrics:
                   val_metrics[m].append(metrics[m])
 
+                for i in range(preds.shape[0]):
+                  val_outputs[meta['source_file'][i]].append({
+                    'Prediction': preds[i],
+                    **jax.tree_map(lambda x: x[i], batch),
+                    **jax.tree_map(lambda x: x[i], meta),
+                  })
+
             logging.log_metrics(val_metrics, 'val', step)
+
+            if step % config.validation.image_frequency == 0:
+              for tile, data in val_outputs.items():
+                name = Path(tile).stem
+                y_max = max(d['y1'] for d in data)
+                x_max = max(d['x1'] for d in data)
+
+                rgb  = np.zeros([y_max, x_max, 3], dtype=np.uint8)
+                mask = np.zeros([y_max, x_max, 1], dtype=np.uint8)
+                pred = np.zeros([y_max, x_max, 1], dtype=np.uint8)
+
+                for patch in data:
+                  y0, x0, y1, x1 = [patch[k] for k in ['y0', 'x0', 'y1', 'x1']]
+                  patch_rgb = patch['Sentinel2'][:, :, [3,2,1]]
+                  patch_rgb = np.clip(2 * 255 * patch_rgb, 0, 255).astype(np.uint8)
+                  patch_mask = np.clip(255 * patch['Mask'], 0, 255).astype(np.uint8)
+                  patch_pred = np.clip(255 * patch['Prediction'], 0, 255).astype(np.uint8)
+
+                  rgb[y0:y1, x0:x1]  = patch_rgb
+                  mask[y0:y1, x0:x1] = patch_mask
+                  pred[y0:y1, x0:x1] = patch_pred
+
+                stacked = np.concatenate([
+                  rgb,
+                  np.concatenate([mask, np.zeros_like(mask), pred], axis=-1),
+                ], axis=0)
+
+                stacked = Image.fromarray(stacked)
+                stacked_path = Path(wandb.run.dir) / f'imgs_{name}.jpg'
+                stacked.save(stacked_path)
+
+                mask_img = Image.new("L", (x_max, y_max), 0)
+                mask_draw = ImageDraw.Draw(mask_img)
+                for contour in measure.find_contours(mask[..., 0], 0.5):
+                  mask_draw.polygon([(x,y) for y,x in contour],
+                                    fill=0, outline=255, width=3)
+
+                pred_img = Image.new("L", (x_max, y_max), 0)
+                pred_draw = ImageDraw.Draw(pred_img)
+                for contour in measure.find_contours(pred[..., 0], 0.5):
+                  mask_draw.polygon([(x,y) for y,x in contour],
+                                    fill=0, outline=255, width=3)
+                mask_img = np.asarray(mask_img)
+                pred_img = np.asarray(pred_img)
+                annot = np.stack([
+                  mask_img,
+                  np.zeros_like(mask_img),
+                  pred_img
+                ], axis=-1)
+                rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
+                                          rgb, annot)
+                rgb_with_annot = Image.fromarray(rgb_with_annot)
+                annot_path = Path(wandb.run.dir) / f'contour_{name}.jpg'
+                rgb_with_annot.save(annot_path)
+                wandb.log({f'contour/{name}': wandb.Image(str(annot_path)),
+                           f'imgs/{name}': wandb.Image(str(stacked_path)),
+                }, step=step)
+
+
+
