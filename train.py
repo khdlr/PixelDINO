@@ -201,7 +201,7 @@ if __name__ == '__main__':
                 stacked = np.concatenate([
                   rgb,
                   np.concatenate([mask, np.zeros_like(mask), pred], axis=-1),
-                ], axis=0)
+                ], axis=1)
 
                 stacked = Image.fromarray(stacked)
                 stacked_path = Path(wandb.run.dir) / f'imgs_{name}.jpg'
