@@ -200,7 +200,11 @@ if __name__ == '__main__':
 
                 stacked = np.concatenate([
                   rgb,
-                  np.concatenate([mask, np.zeros_like(mask), pred], axis=-1),
+                  np.concatenate([
+                    mask,
+                    pred,
+                    np.zeros_like(mask)
+                  ], axis=-1),
                 ], axis=1)
 
                 stacked = Image.fromarray(stacked)
