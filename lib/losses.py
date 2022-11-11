@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 from jax.experimental.host_callback import id_print
+from functools import partial
 
 
 def bce(y_true, y_pred):
@@ -23,6 +24,19 @@ def weighted_bce(y_true, y_pred):
 
     loss = -(4 * y_true * log_y_true + (1-y_true) * log_y_false)
     loss = jnp.where(ignore, 0., loss)
+    return jnp.mean(loss)
+
+
+def dice_loss(y_true, y_pred):
+    valid = (y_true > -.5) & (y_true < 1.5)
+
+    p_pred = jax.nn.sigmoid(y_pred)
+
+    sum = partial(jnp.sum, axis=[1,2,3])
+    num   = 2 * sum(p_pred * y_true * valid)
+    denom = sum(p_pred * valid) + sum(y_true * valid)
+
+    loss = 1 - (num + 1) / (denom + 1)
     return jnp.mean(loss)
 
 
