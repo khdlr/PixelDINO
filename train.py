@@ -138,7 +138,7 @@ if __name__ == '__main__':
     train_gen_u = iter(data_trn_u)
 
     trn_metrics = defaultdict(list)
-    for step in tqdm(range(1, 1+config.train.steps)):
+    for step in tqdm(range(1, 1+config.train.steps), ncols=80):
         labelled, meta_labelled = next(train_gen)
         unlabelled, meta_labelled = next(train_gen_u)
 
@@ -208,8 +208,6 @@ if __name__ == '__main__':
                 ], axis=1)
 
                 stacked = Image.fromarray(stacked)
-                stacked_path = Path(wandb.run.dir) / f'imgs_{name}.jpg'
-                stacked.save(stacked_path)
 
                 mask_img = Image.new("L", (x_max, y_max), 0)
                 mask_draw = ImageDraw.Draw(mask_img)
@@ -232,10 +230,8 @@ if __name__ == '__main__':
                 rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
                                           rgb, annot)
                 rgb_with_annot = Image.fromarray(rgb_with_annot)
-                annot_path = Path(wandb.run.dir) / f'contour_{name}.jpg'
-                rgb_with_annot.save(annot_path)
-                wandb.log({f'contour/{name}': wandb.Image(str(annot_path)),
-                           f'imgs/{name}': wandb.Image(str(stacked_path)),
+                wandb.log({f'contour/{name}': wandb.Image(rgb_with_annot),
+                           f'imgs/{name}': wandb.Image(stacked),
                 }, step=step)
 
 
