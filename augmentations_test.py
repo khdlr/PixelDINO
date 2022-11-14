@@ -43,12 +43,12 @@ if __name__ == '__main__':
       for i in range(B['Sentinel2'].shape[0]):
         ary = V['Sentinel2'][i]
         print(i, ary.min(), ary.mean(), ary.max())
-        rgb(V, i).save(f'tmp/{i}_raw_rgb.jpg')
-        mask(V, i).save(f'tmp/{i}_raw_mask.png')
-        rgb(W, i).save(f'tmp/{i}_weak_rgb.jpg')
-        mask(W, i).save(f'tmp/{i}_weak_mask.png')
-        rgb(S, i).save(f'tmp/{i}_strong_rgb.jpg')
-        mask(S, i).save(f'tmp/{i}_strong_mask.png')
+        rgb(V, i).save(f'augs/{i}_raw_rgb.jpg')
+        mask(V, i).save(f'augs/{i}_raw_mask.png')
+        rgb(W, i).save(f'augs/{i}_weak_rgb.jpg')
+        mask(W, i).save(f'augs/{i}_weak_mask.png')
+        rgb(S, i).save(f'augs/{i}_strong_rgb.jpg')
+        mask(S, i).save(f'augs/{i}_strong_mask.png')
 
       break
 
