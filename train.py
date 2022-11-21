@@ -25,7 +25,8 @@ jax.config.update("jax_numpy_rank_promotion", "raise")
 
 def get_optimizer():
   conf = config.optimizer
-  return getattr(optax, conf.type)(**conf.args)
+  schedule = getattr(optax, conf.schedule)(**conf.schedule_args)
+  return getattr(optax, conf.type)(schedule, **conf.args)
 
 
 def get_loss_fn(mode):
