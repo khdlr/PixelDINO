@@ -217,7 +217,7 @@ if __name__ == '__main__':
 
                 pred_img = Image.new("L", (x_max, y_max), 0)
                 pred_draw = ImageDraw.Draw(pred_img)
-                for contour in measure.find_contours(pred[..., 0], 0.5):
+                for contour in measure.find_contours(pred[..., 0], 0.7):
                   pred_draw.polygon([(x,y) for y,x in contour],
                                     fill=0, outline=255, width=3)
                 mask_img = np.asarray(mask_img)
@@ -233,6 +233,4 @@ if __name__ == '__main__':
                 wandb.log({f'contour/{name}': wandb.Image(rgb_with_annot),
                            f'imgs/{name}': wandb.Image(stacked),
                 }, step=step)
-
-
 
