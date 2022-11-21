@@ -72,8 +72,8 @@ def distort(batch, augment_key):
         augmax.Rotate(),
         augmax.Warp(coarseness=16, strength=2),
         augmax.RandomGamma(p=1., range=[0.75, 1.33]),
-        augmax.RandomBrightness(),
-        augmax.RandomContrast(),
+        augmax.RandomBrightness(p=1.),
+        augmax.RandomContrast(p=1.),
         augmax.GaussianBlur(sigma=2)
     ]
 
