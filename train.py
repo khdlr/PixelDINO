@@ -121,7 +121,7 @@ if __name__ == '__main__':
     data_val   = get_loader(config.datasets.val)
     
     sample_data, sample_meta = next(iter(data_trn))
-    S, params = models.get_model(sample_data['Sentinel2'])
+    S, params = utils.get_model(sample_data['Sentinel2'])
 
     # Initialize model and optimizer state
     opt_init, _ = get_optimizer()

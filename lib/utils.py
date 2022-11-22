@@ -1,16 +1,11 @@
 import jax
-import jax.numpy as jnp
 import haiku as hk
 import optax
-import augmax
-import numpy as np
 from einops import rearrange
-from jax.experimental import host_callback
-from skimage.measure import find_contours
 from typing import Union, Sequence, Optional, Tuple
-from subprocess import check_output
 from typing import NamedTuple
 import pickle
+from . import models, config
 
 
 class TrainingState(NamedTuple):
@@ -35,6 +30,14 @@ def load_state(checkpoint_path):
     with open(checkpoint_path, "rb") as f:
         state = pickle.load(f)
     return state
+
+
+def get_model(*dummy_in, seed=jax.random.PRNGKey(39)):
+  model_cls = getattr(models, config.model.type)
+  model = hk.without_apply_rng(hk.transform(lambda x: model_cls()(x)))
+  params = model.init(seed, *jax.tree_map(lambda x: x[:1], dummy_in))
+
+  return model, params
 
 
 def prep(batch, augment_key=None):
