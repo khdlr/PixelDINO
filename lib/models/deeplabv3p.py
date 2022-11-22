@@ -12,7 +12,7 @@ class DeepLabv3p:
 
   def __call__(self, inp):
     x_hr, x_lr = self.backbone(inp)
-    x_hr = nn.ConvLNAct(256, 3)(x_hr)
+    x_hr = nn.ConvLNAct(64, 3)(x_hr)
 
     B, H, W, C = x_hr.shape
 
@@ -21,10 +21,10 @@ class DeepLabv3p:
       jax.image.resize(x_lr, [B, H, W, x_lr.shape[-1]], method='bilinear')
     ], axis=-1)
 
-    x = nn.ConvLNAct(256, 3)(x)
-    x = nn.ConvLNAct(256, 3)(x)
+    x = nn.ConvLNAct(64, 3)(x)
+    x = nn.ConvLNAct(64, 3)(x)
 
-    x = jax.image.resize(x, inp.shape[:-1] + (256, ), method='bilinear')
+    x = jax.image.resize(x, inp.shape[:-1] + (64, ), method='bilinear')
     x = hk.Conv2D(1, 1)(x)
     return x
 
