@@ -1,11 +1,16 @@
 import jax
+import jax.numpy as jnp
+import numpy as np
 import haiku as hk
+import augmax
 import optax
+from subprocess import check_output
 from einops import rearrange
 from typing import Union, Sequence, Optional, Tuple
 from typing import NamedTuple
 import pickle
-from . import models, config
+from . import models
+from .config_mod import config
 
 
 class TrainingState(NamedTuple):
@@ -146,36 +151,6 @@ def assert_git_clean():
     )
     if diff and diff != ["config.yml"]:
         assert False, "Won't run on a dirty git state!"
-
-
-def snakify(mask, vertices):
-    res = host_callback.call(
-        snakify_host,
-        (mask, vertices),
-        result_shape=jnp.zeros([mask.shape[0], vertices, 2], jnp.float32),
-    )
-    return res
-
-
-def snakify_host(args):
-    masks, vertices = args
-    res = np.zeros([masks.shape[0], vertices, 2], np.float32)
-    for i, mask in enumerate(masks):
-        contours = find_contours(mask[..., 0], 0)
-        # Select the longest contour
-        if len(contours) == 0:
-            continue
-
-        contour = max(contours, key=lambda x: x.shape[0])
-        contour = contour.astype(np.float32)
-        contour = contour.view(np.complex64)[:, 0]
-        C_space = np.linspace(0, 1, len(contour), dtype=np.float32)
-        S_space = np.linspace(0, 1, vertices, dtype=np.float32)
-        snake = np.interp(S_space, C_space, contour)
-        snake = snake[:, np.newaxis].view(np.float64).astype(np.float32)
-
-        res[i] = snake * (2.0 / mask.shape[0]) - 1.0
-    return res
 
 
 def _infer_shape(

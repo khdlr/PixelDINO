@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import haiku as hk
-from .. import config
+from ..config_mod import config
 from . import backbones
 from .backbones import nnutils as nn
 
