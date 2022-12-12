@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 import sys
 from munch import munchify
-from lib.data_loading import get_loader
+from lib.data_loading import get_loader, TemporalNCDataset
 from lib import utils, logging, models, config, losses
 from lib.metrics import compute_premetrics, compute_metrics
 from lib.utils import TrainingState, prep, distort, changed_state, save_state
@@ -42,13 +42,14 @@ def train_step(labelled, unlabelled, state, key, model):
   batch_l = distort(prep(labelled, augment_key=aug_key_1a), aug_key_1b)
   img_l   = batch_l['Sentinel2']
   mask_l  = batch_l['Mask']
-  img_u   = prep(unlabelled, augment_key=aug_key_2)['Sentinel2']
+  img_u_0  = prep(unlabelled[0], augment_key=aug_key_2)['Sentinel2']
+  img_u_1  = prep(unlabelled[1], augment_key=aug_key_2)['Sentinel2']
   
   def get_loss(params):
     pred_l = model(params, img_l)
-    pred_u = model(params, img_u)
+    pred_u = model(params, img_u_0)
 
-    distorted = distort({'Sentinel2': img_u, 'Mask': pred_u}, aug_key_3)
+    distorted = distort({'Sentinel2': img_u_1, 'Mask': pred_u}, aug_key_3)
     img_d  = distorted['Sentinel2']
     mask_d = jax.nn.sigmoid(distorted['Mask'])
     mask_d = jnp.where( mask_d > 0.8,  1,
@@ -117,7 +118,7 @@ if __name__ == '__main__':
     train_key, subkey = jax.random.split(train_key)
 
     data_trn   = get_loader(config.datasets.train_labelled)
-    data_trn_u = get_loader(config.datasets.train_unlabelled)
+    data_trn_u = get_loader(config.datasets.train_unlabelled, TemporalNCDataset)
     data_val   = get_loader(config.datasets.val)
     
     sample_data, sample_meta = next(iter(data_trn))
@@ -141,7 +142,7 @@ if __name__ == '__main__':
     trn_metrics = defaultdict(list)
     for step in tqdm(range(1, 1+config.train.steps), ncols=80):
         labelled, meta_labelled = next(train_gen)
-        unlabelled, meta_labelled = next(train_gen_u)
+        *unlabelled, meta_labelled = next(train_gen_u)
 
         train_key, subkey = jax.random.split(train_key)
         terms, state = train_step(labelled, unlabelled, state, subkey, net)

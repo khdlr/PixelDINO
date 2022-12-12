@@ -85,15 +85,79 @@ class NCDataset(Dataset):
         tile[k] = (tile[k] * self.scale[k]).clip(0, 1)
     return tile, metadata
 
-
   def __len__(self):
     return self.H_tile * self.W_tile
 
 
-def get_loader(config):
+class TemporalNCDataset(Dataset):
+  def __init__(self, netcdf_path, config):
+    self.netcdf_path = netcdf_path
+    self.tile_size = config.tile_size
+    self.datasets = config.datasets
+    self.data = xarray.open_dataset(netcdf_path, cache=False)
+    self.sampling_mode = config.sampling_mode
+
+    self.T, self.H, self.W = len(self.data.time), len(self.data.y), len(self.data.x)
+    self.H_tile = self.H // self.tile_size
+    self.W_tile = self.W // self.tile_size
+
+    self.scale = {'Sentinel2': 1/10000}
+
+    if self.sampling_mode == 'targets_only':
+      targets = (self.data.Mask == 1).squeeze('mask_band').values
+      # Find Bounding boxes of targets
+      contours = find_contours(targets)
+
+      self.bboxes = []
+      for contour in contours:
+        ymin, xmin = np.floor(contour.min(axis=0)).astype(int)
+        ymax, xmax = np.ceil(contour.max(axis=0)).astype(int)
+        self.bboxes.append([ymin, xmin, ymax, xmax])
+
+  def __getitem__(self, idx):
+    if self.sampling_mode == 'deterministic':
+      t0, rem    = divmod(idx, self.H_tile * self.W_tile)
+      t1 = t0 + 1
+      y_tile, x_tile = divmod(idx, self.W_tile)
+      y0 = y_tile * self.tile_size
+      x0 = x_tile * self.tile_size
+    elif self.sampling_mode == 'random':
+      t0 = int(torch.randint(0, self.T - 1, ()))
+      t1 = t0 + 1
+      if torch.randint(0, 2, ()):
+        t0, t1 = t1, t0
+      y0 = int(torch.randint(0, self.H - self.tile_size, ()))
+      x0 = int(torch.randint(0, self.W - self.tile_size, ()))
+    else:
+      raise ValueError(f'Unsupported tiling mode: {self.sampling_mode!r}')
+    y1 = y0 + self.tile_size
+    x1 = x0 + self.tile_size
+
+    metadata = {
+      'source_file': self.netcdf_path,
+      't0': t0, 't1': t1,
+      'y0': y0, 'x0': x0,
+      'y1': y1, 'x1': x1,
+    }
+    tile0 = {k: self.data[k][t0, :, y0:y1, x0:x1].fillna(0).values for k in self.datasets}
+    tile1 = {k: self.data[k][t1, :, y0:y1, x0:x1].fillna(0).values for k in self.datasets}
+
+    for tile in [tile0, tile1]:
+      for k in tile:
+        if k in self.scale:
+          tile[k] = (tile[k] * self.scale[k]).clip(0, 1)
+          tile[k] = rearrange(tile[k], 'C H W -> H W C')
+
+    return tile0, tile1, metadata
+
+  def __len__(self):
+    return (self.T - 1) * self.H_tile * self.W_tile
+
+
+def get_loader(config, dsclass=NCDataset):
   root = config.root
   scene_names = config.scenes
-  scenes = [NCDataset(f'{root}/{scene}.nc', config) for scene in scene_names]
+  scenes = [dsclass(f'{root}/{scene}.nc', config) for scene in scene_names]
   all_data = ConcatDataset(scenes)
 
   if config.sampling_mode == 'deterministic':
@@ -112,6 +176,7 @@ def get_loader(config):
 def numpy_collate(batch):
   """Collate tensors as numpy arrays, taken from
   https://jax.readthedocs.io/en/latest/notebooks/Neural_Network_and_Data_Loading.html"""
+
   if isinstance(batch[0], np.ndarray):
     return np.stack(batch)
   elif isinstance(batch[0], (tuple, list)):
