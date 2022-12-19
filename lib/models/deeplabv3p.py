@@ -11,7 +11,7 @@ class DeepLabv3p:
     self.backbone = getattr(backbones, config.model.backbone)()
 
   def __call__(self, inp):
-    x_hr, x_lr = self.backbone(inp)
+    _, x_hr, _, x_lr = features = self.backbone(inp)
     x_hr = nn.ConvLNAct(64, 3)(x_hr)
 
     B, H, W, C = x_hr.shape

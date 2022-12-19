@@ -38,7 +38,7 @@ class Xception(hk.Module):
         x = nn.ConvLNAct(128, 1, act='elu')(x)
         # skip3 = nn.ConvLNAct(64, 1, act='elu')(skip3)
 
-        return [skip2, x]
+        return [skip1, skip2, skip3, x]
 
 
 class XceptionBlock(hk.Module):
