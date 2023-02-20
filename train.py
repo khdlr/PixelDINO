@@ -5,6 +5,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import optax
+from lib.lion import lion
 from functools import partial
 from collections import defaultdict
 from PIL import Image, ImageDraw
@@ -26,7 +27,11 @@ jax.config.update("jax_numpy_rank_promotion", "raise")
 def get_optimizer():
   conf = config.optimizer
   schedule = getattr(optax, conf.schedule)(**conf.schedule_args)
-  return getattr(optax, conf.type)(schedule, **conf.args)
+  if conf.type == 'lion':
+    opt_class = lion
+  else:
+    opt_class = getattr(optax, conf.type)
+  return opt_class(schedule, **conf.args)
 
 
 def get_loss_fn(mode):
