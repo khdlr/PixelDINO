@@ -125,29 +125,11 @@ def numpy_collate(batch):
 
 
 if __name__ == '__main__':
-    from sys import argv
-    from einops import rearrange
-    from PIL import Image
-    from lib.utils.plot_info import grid
+    import yaml
+    from munch import munchify
 
-    file = Path(argv[1])
-    dataset = TimeseriesDataset(file, sampling_mode='deterministic')
+    config = munchify(yaml.safe_load(open('config.yml')))
+    dataset = get_loader(config.datasets.train_unlabelled)
     # loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
-    for i in tqdm(range(len(dataset))):
-        img, mask = dataset[i]
-        if not (mask == 1).any():
-            continue
-        img  = img.numpy()
-        mask = mask.numpy()
-
-        mask = np.where(mask == 255, np.uint8(127),
-               np.where(mask == 1,   np.uint8(255),
-                                     np.uint8(  0)))
-
-        print(img.min(), img.max(), end=' -> ')
-        img = rearrange(img[[3,2,7]], 'C H W -> H W C')
-        img  = np.clip(2 * 255 * img, 0, 255).astype(np.uint8)
-        print(img.min(), img.max())
-        combined = Image.fromarray(grid([[img, mask]]))
-        combined.save(f'img/{file.stem}_{i}.jpg')
-
+    for i in tqdm(dataset):
+      pass
