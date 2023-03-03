@@ -14,13 +14,25 @@
 # ==============================================================================
 """Resnet Backbones -> Slight adaptation by removing the final Pooling and FC layer"""
 
+import types
 from typing import Mapping, Optional, Sequence, Union, Any
 
+from haiku._src import basic
+from haiku._src import batch_norm
+from haiku._src import conv
+from haiku._src import module
+from haiku._src import pool
 import jax
 import jax.numpy as jnp
 
 # If forking replace this block with `import haiku as hk`.
-import haiku as hk
+hk = types.ModuleType("haiku")
+hk.Module = module.Module
+hk.BatchNorm = batch_norm.BatchNorm
+hk.Conv2D = conv.Conv2D
+hk.Linear = basic.Linear
+hk.max_pool = pool.max_pool
+del basic, batch_norm, conv, module, pool
 FloatStrOrBool = Union[str, float, bool]
 
 
@@ -32,18 +44,17 @@ class BlockV1(hk.Module):
       channels: int,
       stride: Union[int, Sequence[int]],
       use_projection: bool,
-      ln_config: Mapping[str, FloatStrOrBool],
+      bn_config: Mapping[str, FloatStrOrBool],
       bottleneck: bool,
       name: Optional[str] = None,
   ):
     super().__init__(name=name)
     self.use_projection = use_projection
 
-    ln_config = dict(ln_config)
-    ln_config.setdefault("axis", -1)
-    ln_config.setdefault("param_axis", -1)
-    ln_config.setdefault("create_scale", True)
-    ln_config.setdefault("create_offset", True)
+    bn_config = dict(bn_config)
+    bn_config.setdefault("create_scale", True)
+    bn_config.setdefault("create_offset", True)
+    bn_config.setdefault("decay_rate", 0.999)
 
     if self.use_projection:
       self.proj_conv = hk.Conv2D(
@@ -54,7 +65,7 @@ class BlockV1(hk.Module):
           padding="SAME",
           name="shortcut_conv")
 
-      self.proj_layernorm = hk.LayerNorm(name="shortcut_layernorm", **ln_config)
+      self.proj_batchnorm = hk.BatchNorm(name="shortcut_batchnorm", **bn_config)
 
     channel_div = 4 if bottleneck else 1
     conv_0 = hk.Conv2D(
@@ -64,7 +75,7 @@ class BlockV1(hk.Module):
         with_bias=False,
         padding="SAME",
         name="conv_0")
-    bn_0 = hk.LayerNorm(name="layernorm_0", **ln_config)
+    bn_0 = hk.BatchNorm(name="batchnorm_0", **bn_config)
 
     conv_1 = hk.Conv2D(
         output_channels=channels // channel_div,
@@ -74,7 +85,7 @@ class BlockV1(hk.Module):
         padding="SAME",
         name="conv_1")
 
-    bn_1 = hk.LayerNorm(name="layernorm_1", **ln_config)
+    bn_1 = hk.BatchNorm(name="batchnorm_1", **bn_config)
     layers = ((conv_0, bn_0), (conv_1, bn_1))
 
     if bottleneck:
@@ -86,21 +97,21 @@ class BlockV1(hk.Module):
           padding="SAME",
           name="conv_2")
 
-      bn_2 = hk.LayerNorm(name="layernorm_2", scale_init=jnp.zeros, **ln_config)
+      bn_2 = hk.BatchNorm(name="batchnorm_2", scale_init=jnp.zeros, **bn_config)
       layers = layers + ((conv_2, bn_2),)
 
     self.layers = layers
 
-  def __call__(self, inputs):
+  def __call__(self, inputs, is_training, test_local_stats):
     out = shortcut = inputs
 
     if self.use_projection:
       shortcut = self.proj_conv(shortcut)
-      shortcut = self.proj_layernorm(shortcut)
+      shortcut = self.proj_batchnorm(shortcut, is_training, test_local_stats)
 
     for i, (conv_i, bn_i) in enumerate(self.layers):
       out = conv_i(out)
-      out = bn_i(out)
+      out = bn_i(out, is_training, test_local_stats)
       if i < len(self.layers) - 1:  # Don't apply relu on last layer
         out = jax.nn.relu(out)
 
@@ -115,16 +126,16 @@ class BlockV2(hk.Module):
       channels: int,
       stride: Union[int, Sequence[int]],
       use_projection: bool,
-      ln_config: Mapping[str, FloatStrOrBool],
+      bn_config: Mapping[str, FloatStrOrBool],
       bottleneck: bool,
       name: Optional[str] = None,
   ):
     super().__init__(name=name)
     self.use_projection = use_projection
 
-    ln_config = dict(ln_config)
-    ln_config.setdefault("create_scale", True)
-    ln_config.setdefault("create_offset", True)
+    bn_config = dict(bn_config)
+    bn_config.setdefault("create_scale", True)
+    bn_config.setdefault("create_offset", True)
 
     if self.use_projection:
       self.proj_conv = hk.Conv2D(
@@ -144,7 +155,7 @@ class BlockV2(hk.Module):
         padding="SAME",
         name="conv_0")
 
-    bn_0 = hk.LayerNorm(name="layernorm_0", **ln_config)
+    bn_0 = hk.BatchNorm(name="batchnorm_0", **bn_config)
 
     conv_1 = hk.Conv2D(
         output_channels=channels // channel_div,
@@ -154,7 +165,7 @@ class BlockV2(hk.Module):
         padding="SAME",
         name="conv_1")
 
-    bn_1 = hk.LayerNorm(name="layernorm_1", **ln_config)
+    bn_1 = hk.BatchNorm(name="batchnorm_1", **bn_config)
     layers = ((conv_0, bn_0), (conv_1, bn_1))
 
     if bottleneck:
@@ -168,16 +179,16 @@ class BlockV2(hk.Module):
 
       # NOTE: Some implementations of ResNet50 v2 suggest initializing
       # gamma/scale here to zeros.
-      bn_2 = hk.LayerNorm(name="layernorm_2", **ln_config)
+      bn_2 = hk.BatchNorm(name="batchnorm_2", **bn_config)
       layers = layers + ((conv_2, bn_2),)
 
     self.layers = layers
 
-  def __call__(self, inputs):
+  def __call__(self, inputs, is_training, test_local_stats):
     x = shortcut = inputs
 
     for i, (conv_i, bn_i) in enumerate(self.layers):
-      x = bn_i(x)
+      x = bn_i(x, is_training, test_local_stats)
       x = jax.nn.relu(x)
       if i == 0 and self.use_projection:
         shortcut = self.proj_conv(x)
@@ -194,7 +205,7 @@ class BlockGroup(hk.Module):
       channels: int,
       num_blocks: int,
       stride: Union[int, Sequence[int]],
-      ln_config: Mapping[str, FloatStrOrBool],
+      bn_config: Mapping[str, FloatStrOrBool],
       resnet_v2: bool,
       bottleneck: bool,
       use_projection: bool,
@@ -211,13 +222,13 @@ class BlockGroup(hk.Module):
                     stride=(1 if i else stride),
                     use_projection=(i == 0 and use_projection),
                     bottleneck=bottleneck,
-                    ln_config=ln_config,
+                    bn_config=bn_config,
                     name="block_%d" % (i)))
 
-  def __call__(self, inputs):
+  def __call__(self, inputs, is_training, test_local_stats):
     out = inputs
     for block in self.blocks:
-      out = block(out)
+      out = block(out, is_training, test_local_stats)
     return out
 
 
@@ -275,7 +286,7 @@ class ResNet(hk.Module):
   def __init__(
       self,
       blocks_per_group: Sequence[int],
-      ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
+      bn_config: Optional[Mapping[str, FloatStrOrBool]] = None,
       resnet_v2: bool = False,
       bottleneck: bool = True,
       channels_per_group: Sequence[int] = (256, 512, 1024, 2048),
@@ -289,8 +300,8 @@ class ResNet(hk.Module):
     Args:
       blocks_per_group: A sequence of length 4 that indicates the number of
         blocks created in each group.
-      ln_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
-        passed on to the :class:`~haiku.LayerNorm` layers. By default the
+      bn_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
+        passed on to the :class:`~haiku.BatchNorm` layers. By default the
         ``decay_rate`` is ``0.9`` and ``eps`` is ``1e-5``.
       resnet_v2: Whether to use the v1 or v2 ResNet implementation. Defaults to
         ``False``.
@@ -308,11 +319,11 @@ class ResNet(hk.Module):
     super().__init__(name=name)
     self.resnet_v2 = resnet_v2
 
-    ln_config = dict(ln_config or {})
-    ln_config.setdefault("axis", -1)
-    ln_config.setdefault("param_axis", -1)
-    ln_config.setdefault("create_scale", True)
-    ln_config.setdefault("create_offset", True)
+    bn_config = dict(bn_config or {})
+    bn_config.setdefault("decay_rate", 0.9)
+    bn_config.setdefault("eps", 1e-5)
+    bn_config.setdefault("create_scale", True)
+    bn_config.setdefault("create_offset", True)
 
     logits_config = dict(logits_config or {})
     logits_config.setdefault("w_init", jnp.zeros)
@@ -333,8 +344,8 @@ class ResNet(hk.Module):
     self.initial_conv = hk.Conv2D(**initial_conv_config)
 
     if not self.resnet_v2:
-      self.initial_layernorm = hk.LayerNorm(name="initial_layernorm",
-                                            **ln_config)
+      self.initial_batchnorm = hk.BatchNorm(name="initial_batchnorm",
+                                            **bn_config)
 
     self.block_groups = []
     strides = (1, 2, 2, 2)
@@ -343,18 +354,18 @@ class ResNet(hk.Module):
           BlockGroup(channels=channels_per_group[i],
                      num_blocks=blocks_per_group[i],
                      stride=strides[i],
-                     ln_config=ln_config,
+                     bn_config=bn_config,
                      resnet_v2=resnet_v2,
                      bottleneck=bottleneck,
                      use_projection=use_projection[i],
                      name="block_group_%d" % (i)))
 
 
-  def __call__(self, inputs):
+  def __call__(self, inputs, is_training=False, test_local_stats=False):
     out = inputs
     out = self.initial_conv(out)
     if not self.resnet_v2:
-      out = self.initial_layernorm(out)
+      out = self.initial_batchnorm(out, is_training, test_local_stats)
       out = jax.nn.relu(out)
 
     out = hk.max_pool(out,
@@ -364,7 +375,7 @@ class ResNet(hk.Module):
 
     xs = []
     for block_group in self.block_groups:
-      out = block_group(out)
+      out = block_group(out, is_training, test_local_stats)
       xs.append(out)
 
     return xs
@@ -375,7 +386,7 @@ class ResNet18(ResNet):
 
   def __init__(
       self,
-      ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
+      bn_config: Optional[Mapping[str, FloatStrOrBool]] = None,
       resnet_v2: bool = False,
       logits_config: Optional[Mapping[str, Any]] = None,
       name: Optional[str] = None,
@@ -384,8 +395,8 @@ class ResNet18(ResNet):
     """Constructs a ResNet model.
 
     Args:
-      ln_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
-        passed on to the :class:`~haiku.LayerNorm` layers.
+      bn_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
+        passed on to the :class:`~haiku.BatchNorm` layers.
       resnet_v2: Whether to use the v1 or v2 ResNet implementation. Defaults
         to ``False``.
       logits_config: A dictionary of keyword arguments for the logits layer.
@@ -393,7 +404,7 @@ class ResNet18(ResNet):
       initial_conv_config: Keyword arguments passed to the constructor of the
         initial :class:`~haiku.Conv2D` module.
     """
-    super().__init__(ln_config=ln_config,
+    super().__init__(bn_config=bn_config,
                      initial_conv_config=initial_conv_config,
                      resnet_v2=resnet_v2,
                      logits_config=logits_config,
@@ -406,7 +417,7 @@ class ResNet34(ResNet):
 
   def __init__(
       self,
-      ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
+      bn_config: Optional[Mapping[str, FloatStrOrBool]] = None,
       resnet_v2: bool = False,
       logits_config: Optional[Mapping[str, Any]] = None,
       name: Optional[str] = None,
@@ -415,8 +426,8 @@ class ResNet34(ResNet):
     """Constructs a ResNet model.
 
     Args:
-      ln_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
-        passed on to the :class:`~haiku.LayerNorm` layers.
+      bn_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
+        passed on to the :class:`~haiku.BatchNorm` layers.
       resnet_v2: Whether to use the v1 or v2 ResNet implementation. Defaults
         to ``False``.
       logits_config: A dictionary of keyword arguments for the logits layer.
@@ -424,7 +435,7 @@ class ResNet34(ResNet):
       initial_conv_config: Keyword arguments passed to the constructor of the
         initial :class:`~haiku.Conv2D` module.
     """
-    super().__init__(ln_config=ln_config,
+    super().__init__(bn_config=bn_config,
                      initial_conv_config=initial_conv_config,
                      resnet_v2=resnet_v2,
                      logits_config=logits_config,
@@ -437,7 +448,7 @@ class ResNet50(ResNet):
 
   def __init__(
       self,
-      ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
+      bn_config: Optional[Mapping[str, FloatStrOrBool]] = None,
       resnet_v2: bool = False,
       logits_config: Optional[Mapping[str, Any]] = None,
       name: Optional[str] = None,
@@ -446,8 +457,8 @@ class ResNet50(ResNet):
     """Constructs a ResNet model.
 
     Args:
-      ln_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
-        passed on to the :class:`~haiku.LayerNorm` layers.
+      bn_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
+        passed on to the :class:`~haiku.BatchNorm` layers.
       resnet_v2: Whether to use the v1 or v2 ResNet implementation. Defaults
         to ``False``.
       logits_config: A dictionary of keyword arguments for the logits layer.
@@ -455,7 +466,7 @@ class ResNet50(ResNet):
       initial_conv_config: Keyword arguments passed to the constructor of the
         initial :class:`~haiku.Conv2D` module.
     """
-    super().__init__(ln_config=ln_config,
+    super().__init__(bn_config=bn_config,
                      initial_conv_config=initial_conv_config,
                      resnet_v2=resnet_v2,
                      logits_config=logits_config,
@@ -468,7 +479,7 @@ class ResNet101(ResNet):
 
   def __init__(
       self,
-      ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
+      bn_config: Optional[Mapping[str, FloatStrOrBool]] = None,
       resnet_v2: bool = False,
       logits_config: Optional[Mapping[str, Any]] = None,
       name: Optional[str] = None,
@@ -477,8 +488,8 @@ class ResNet101(ResNet):
     """Constructs a ResNet model.
 
     Args:
-      ln_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
-        passed on to the :class:`~haiku.LayerNorm` layers.
+      bn_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
+        passed on to the :class:`~haiku.BatchNorm` layers.
       resnet_v2: Whether to use the v1 or v2 ResNet implementation. Defaults
         to ``False``.
       logits_config: A dictionary of keyword arguments for the logits layer.
@@ -486,7 +497,7 @@ class ResNet101(ResNet):
       initial_conv_config: Keyword arguments passed to the constructor of the
         initial :class:`~haiku.Conv2D` module.
     """
-    super().__init__(ln_config=ln_config,
+    super().__init__(bn_config=bn_config,
                      initial_conv_config=initial_conv_config,
                      resnet_v2=resnet_v2,
                      logits_config=logits_config,
@@ -499,7 +510,7 @@ class ResNet152(ResNet):
 
   def __init__(
       self,
-      ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
+      bn_config: Optional[Mapping[str, FloatStrOrBool]] = None,
       resnet_v2: bool = False,
       logits_config: Optional[Mapping[str, Any]] = None,
       name: Optional[str] = None,
@@ -508,8 +519,8 @@ class ResNet152(ResNet):
     """Constructs a ResNet model.
 
     Args:
-      ln_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
-        passed on to the :class:`~haiku.LayerNorm` layers.
+      bn_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
+        passed on to the :class:`~haiku.BatchNorm` layers.
       resnet_v2: Whether to use the v1 or v2 ResNet implementation. Defaults
         to ``False``.
       logits_config: A dictionary of keyword arguments for the logits layer.
@@ -517,7 +528,7 @@ class ResNet152(ResNet):
       initial_conv_config: Keyword arguments passed to the constructor of the
         initial :class:`~haiku.Conv2D` module.
     """
-    super().__init__(ln_config=ln_config,
+    super().__init__(bn_config=bn_config,
                      initial_conv_config=initial_conv_config,
                      resnet_v2=resnet_v2,
                      logits_config=logits_config,
@@ -530,7 +541,7 @@ class ResNet200(ResNet):
 
   def __init__(
       self,
-      ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
+      bn_config: Optional[Mapping[str, FloatStrOrBool]] = None,
       resnet_v2: bool = False,
       logits_config: Optional[Mapping[str, Any]] = None,
       name: Optional[str] = None,
@@ -539,8 +550,8 @@ class ResNet200(ResNet):
     """Constructs a ResNet model.
 
     Args:
-      ln_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
-        passed on to the :class:`~haiku.LayerNorm` layers.
+      bn_config: A dictionary of two elements, ``decay_rate`` and ``eps`` to be
+        passed on to the :class:`~haiku.BatchNorm` layers.
       resnet_v2: Whether to use the v1 or v2 ResNet implementation. Defaults
         to ``False``.
       logits_config: A dictionary of keyword arguments for the logits layer.
@@ -548,7 +559,7 @@ class ResNet200(ResNet):
       initial_conv_config: Keyword arguments passed to the constructor of the
         initial :class:`~haiku.Conv2D` module.
     """
-    super().__init__(ln_config=ln_config,
+    super().__init__(bn_config=bn_config,
                      initial_conv_config=initial_conv_config,
                      resnet_v2=resnet_v2,
                      logits_config=logits_config,
