@@ -276,7 +276,7 @@ class ResNet(hk.Module):
       self,
       blocks_per_group: Sequence[int],
       ln_config: Optional[Mapping[str, FloatStrOrBool]] = None,
-      resnet_v2: bool = True,
+      resnet_v2: bool = False,
       bottleneck: bool = True,
       channels_per_group: Sequence[int] = (256, 512, 1024, 2048),
       use_projection: Sequence[bool] = (True, True, True, True),

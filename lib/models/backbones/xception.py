@@ -11,7 +11,6 @@ class Xception(hk.Module):
     def __call__(self, x):
         B, H, W, C = x.shape
 
-        x = hk.Conv2D(32, 2, stride=2)(x)
         # Backbone
         x, skip1 = XceptionBlock([32, 32, 32], stride=2, return_skip=True)(x)
         x, skip2 = XceptionBlock([64, 64, 64], stride=2, return_skip=True)(x)
