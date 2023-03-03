@@ -26,8 +26,6 @@ class NCDataset(Dataset):
     self.H_tile = self.H // self.tile_size
     self.W_tile = self.W // self.tile_size
 
-    # self.scale = {'Sentinel2': 1/10000}
-
     if self.sampling_mode == 'targets_only':
       targets = (self.data.Mask == 1).squeeze('mask_band').values
       # Find Bounding boxes of targets
@@ -80,9 +78,6 @@ class NCDataset(Dataset):
     }
     tile = {k: self.data[k][:, y0:y1, x0:x1].fillna(0).values for k in self.datasets}
     tile = {k: rearrange(v, 'C H W -> H W C') for k, v in tile.items()}
-    # for k in tile:
-      # if k in self.scale:
-        # tile[k] = (tile[k] * self.scale[k]).clip(0, 1)
     return tile, metadata
 
 
