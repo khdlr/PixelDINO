@@ -1,3 +1,4 @@
+import argparse
 import yaml
 from pathlib import Path
 
@@ -10,11 +11,12 @@ from functools import partial
 from collections import defaultdict
 from PIL import Image, ImageDraw
 from skimage import measure
+from einops import rearrange
+import torch
 
 import wandb
 from tqdm import tqdm
 
-import sys
 from munch import munchify
 from lib.data_loading import get_loader
 from lib import utils, logging, models, config, losses
@@ -39,8 +41,8 @@ def get_loss_fn(mode):
   return getattr(losses, name)
 
 
-@partial(jax.jit, static_argnums=4)
-def train_step(labelled, unlabelled, state, key, model):
+jax.jit
+def train_step(labelled, unlabelled, state, key):
   _, optimizer = get_optimizer()
 
   aug_key_1a, aug_key_1b, aug_key_2, aug_key_3 = jax.random.split(key, 4)
@@ -48,7 +50,7 @@ def train_step(labelled, unlabelled, state, key, model):
   img_l   = batch_l['Sentinel2']
   mask_l  = batch_l['Mask']
   img_u   = prep(unlabelled, augment_key=aug_key_2)['Sentinel2']
-  
+
   def get_loss(params):
     pred_l = model(params, img_l)
     pred_u = model(params, img_u)
@@ -91,8 +93,8 @@ def train_step(labelled, unlabelled, state, key, model):
   )
 
 
-@partial(jax.jit, static_argnums=3)
-def test_step(batch, state, key, model):
+@jax.jit
+def test_step(batch, state, key):
     batch = prep(batch)
     img = batch['Sentinel2']
     mask = batch['Mask']
@@ -111,132 +113,141 @@ def test_step(batch, state, key, model):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2 or sys.argv[1] != '-f':
-        utils.assert_git_clean()
-    train_key = jax.random.PRNGKey(42)
-    persistent_val_key = jax.random.PRNGKey(27)
+  parser = argparse.ArgumentParser(prog="Permafrost SSL Training script")
+  parser.add_argument('config', type=Path)
+  parser.add_argument('-s', '--seed', type=int, required=True)
+  parser.add_argument('-n', '--name', type=str, required=True)
+  parser.add_argument('-f', '--skip-git-check', action='store_true')
+  args = parser.parse_args()
 
-    config.update(munchify(yaml.load(open('config.yml'), Loader=yaml.SafeLoader)))
+  torch.manual_seed(args.seed)
+  train_key = jax.random.PRNGKey(args.seed)
+  persistent_val_key = jax.random.PRNGKey(27)
 
-    # initialize data loading
-    train_key, subkey = jax.random.split(train_key)
+  config.update(munchify(yaml.safe_load(args.config.open())))
 
-    data_trn   = get_loader(config.datasets.train_labelled)
-    data_trn_u = get_loader(config.datasets.train_unlabelled)
-    data_val   = get_loader(config.datasets.val)
-    
-    sample_data, sample_meta = next(iter(data_trn))
-    S, params = utils.get_model(sample_data['Sentinel2'])
+  # initialize data loading
+  train_key, subkey = jax.random.split(train_key)
 
-    # Initialize model and optimizer state
-    opt_init, _ = get_optimizer()
-    state = TrainingState(params=params, opt=opt_init(params))
-    net = S.apply
-    wandb.init(project=f'RTS', config=config)
+  data_trn   = get_loader(config.datasets.train_labelled)
+  data_trn_u = get_loader(config.datasets.train_unlabelled)
+  data_val   = get_loader(config.datasets.val)
+  
+  sample_data, sample_meta = next(iter(data_trn))
+  S, params = utils.get_model(sample_data['Sentinel2'])
 
-    run_dir = Path(f'runs/{wandb.run.id}/')
-    run_dir.mkdir(parents=True)
-    config.run_id = wandb.run.id
-    with open(run_dir / 'config.yml', 'w') as f:
-        f.write(yaml.dump(config, default_flow_style=False))
+  # Initialize model and optimizer state
+  opt_init, _ = get_optimizer()
+  model = S.apply
 
-    train_gen = iter(data_trn)
-    train_gen_u = iter(data_trn_u)
+  state = TrainingState(params=params, opt=opt_init(params))
 
-    trn_metrics = defaultdict(list)
-    for step in tqdm(range(1, 1+config.train.steps), ncols=80):
-        labelled, meta_labelled = next(train_gen)
-        unlabelled, meta_labelled = next(train_gen_u)
+  wandb.init(project=f'RTS SSL', config=config, )
 
-        train_key, subkey = jax.random.split(train_key)
-        terms, state = train_step(labelled, unlabelled, state, subkey, net)
+  run_dir = Path(f'runs/{args.name}/')
+  assert not run_dir.exists(), f"Previous run exists at {run_dir}"
+  run_dir.mkdir(parents=True)
+  config.run_id = wandb.run.id
+  with open(run_dir / 'config.yml', 'w') as f:
+      f.write(yaml.dump(config, default_flow_style=False))
 
-        for k in terms:
-            trn_metrics[k].append(terms[k])
+  train_gen = iter(data_trn)
+  train_gen_u = iter(data_trn_u)
 
-        """
-        Metrics logging and Validation
-        """
-        if step % config.validation.frequency == 0:
-            logging.log_metrics(trn_metrics, 'trn', step, do_print=False)
-            trn_metrics = defaultdict(list)
-            # Save Checkpoint
-            save_state(state, run_dir / f'latest.pkl')
+  trn_metrics = defaultdict(list)
+  for step in tqdm(range(1, 1+config.train.steps), ncols=80):
+      labelled, meta_labelled = next(train_gen)
+      unlabelled, meta_labelled = next(train_gen_u)
 
-            # Validate
-            val_key = persistent_val_key
-            val_metrics = defaultdict(list)
-            val_outputs = defaultdict(list)
-            for step_test, (batch, meta) in enumerate(data_val):
-                val_key, subkey = jax.random.split(val_key)
-                metrics, preds = test_step(batch, state, subkey, net)
+      train_key, subkey = jax.random.split(train_key)
+      terms, state = train_step(labelled, unlabelled, state, subkey)
 
-                for m in metrics:
-                  val_metrics[m].append(metrics[m])
+      for k in terms:
+          trn_metrics[k].append(terms[k])
 
-                for i in range(preds.shape[0]):
-                  val_outputs[meta['source_file'][i]].append({
-                    'Prediction': preds[i],
-                    **jax.tree_map(lambda x: x[i], batch),
-                    **jax.tree_map(lambda x: x[i], meta),
-                  })
+      """
+      Metrics logging and Validation
+      """
+      if step % config.validation.frequency == 0:
+          logging.log_metrics(trn_metrics, 'trn', step, do_print=False)
+          trn_metrics = defaultdict(list)
+          # Save Checkpoint
+          save_state(state, run_dir / f'latest.pkl')
 
-            logging.log_metrics(val_metrics, 'val', step)
+          # Validate
+          val_key = persistent_val_key
+          val_metrics = defaultdict(list)
+          val_outputs = defaultdict(list)
+          for step_test, (batch, meta) in enumerate(data_val):
+              val_key, subkey = jax.random.split(val_key)
+              metrics, preds = test_step(batch, state, subkeys)
 
-            if step % config.validation.image_frequency == 0:
-              for tile, data in val_outputs.items():
-                name = Path(tile).stem
-                y_max = max(d['y1'] for d in data)
-                x_max = max(d['x1'] for d in data)
+              for m in metrics:
+                val_metrics[m].append(metrics[m])
 
-                rgb  = np.zeros([y_max, x_max, 3], dtype=np.uint8)
-                mask = np.zeros([y_max, x_max, 1], dtype=np.uint8)
-                pred = np.zeros([y_max, x_max, 1], dtype=np.uint8)
+              for i in range(preds.shape[0]):
+                val_outputs[meta['source_file'][i]].append({
+                  'Prediction': preds[i],
+                  **jax.tree_map(lambda x: x[i], batch),
+                  **jax.tree_map(lambda x: x[i], meta),
+                })
 
-                for patch in data:
-                  y0, x0, y1, x1 = [patch[k] for k in ['y0', 'x0', 'y1', 'x1']]
-                  patch_rgb = patch['Sentinel2'][:, :, [3,2,1]]
-                  patch_rgb = np.clip(2 * 255 * patch_rgb, 0, 255).astype(np.uint8)
-                  patch_mask = np.clip(255 * patch['Mask'], 0, 255).astype(np.uint8)
-                  patch_pred = np.clip(255 * patch['Prediction'], 0, 255).astype(np.uint8)
+          logging.log_metrics(val_metrics, 'val', step)
 
-                  rgb[y0:y1, x0:x1]  = patch_rgb
-                  mask[y0:y1, x0:x1] = patch_mask
-                  pred[y0:y1, x0:x1] = patch_pred
+          if step % config.validation.image_frequency == 0:
+            for tile, data in val_outputs.items():
+              name = Path(tile).stem
+              y_max = max(d['y1'] for d in data)
+              x_max = max(d['x1'] for d in data)
 
-                stacked = np.concatenate([
-                  rgb,
-                  np.concatenate([
-                    mask,
-                    pred,
-                    np.zeros_like(mask)
-                  ], axis=-1),
-                ], axis=1)
+              rgb  = np.zeros([y_max, x_max, 3], dtype=np.uint8)
+              mask = np.zeros([y_max, x_max, 1], dtype=np.uint8)
+              pred = np.zeros([y_max, x_max, 1], dtype=np.uint8)
 
-                stacked = Image.fromarray(stacked)
+              for patch in data:
+                y0, x0, y1, x1 = [patch[k] for k in ['y0', 'x0', 'y1', 'x1']]
+                patch_rgb = patch['Sentinel2'][:, :, [3,2,1]]
+                patch_rgb = np.clip(2 * 255 * patch_rgb, 0, 255).astype(np.uint8)
+                patch_mask = np.clip(255 * patch['Mask'], 0, 255).astype(np.uint8)
+                patch_pred = np.clip(255 * patch['Prediction'], 0, 255).astype(np.uint8)
 
-                mask_img = Image.new("L", (x_max, y_max), 0)
-                mask_draw = ImageDraw.Draw(mask_img)
-                for contour in measure.find_contours(mask[..., 0], 0.5):
-                  mask_draw.polygon([(x,y) for y,x in contour],
-                                    fill=0, outline=255, width=3)
+                rgb[y0:y1, x0:x1]  = patch_rgb
+                mask[y0:y1, x0:x1] = patch_mask
+                pred[y0:y1, x0:x1] = patch_pred
 
-                pred_img = Image.new("L", (x_max, y_max), 0)
-                pred_draw = ImageDraw.Draw(pred_img)
-                for contour in measure.find_contours(pred[..., 0], 0.7):
-                  pred_draw.polygon([(x,y) for y,x in contour],
-                                    fill=0, outline=255, width=3)
-                mask_img = np.asarray(mask_img)
-                pred_img = np.asarray(pred_img)
-                annot = np.stack([
-                  mask_img,
-                  pred_img,
-                  np.zeros_like(mask_img),
-                ], axis=-1)
-                rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
-                                          rgb, annot)
-                rgb_with_annot = Image.fromarray(rgb_with_annot)
-                wandb.log({f'contour/{name}': wandb.Image(rgb_with_annot),
-                           f'imgs/{name}': wandb.Image(stacked),
-                }, step=step)
+              stacked = np.concatenate([
+                rgb,
+                np.concatenate([
+                  mask,
+                  pred,
+                  np.zeros_like(mask)
+                ], axis=-1),
+              ], axis=1)
+
+              stacked = Image.fromarray(stacked)
+
+              mask_img = Image.new("L", (x_max, y_max), 0)
+              mask_draw = ImageDraw.Draw(mask_img)
+              for contour in measure.find_contours(mask[..., 0], 0.5):
+                mask_draw.polygon([(x,y) for y,x in contour],
+                                  fill=0, outline=255, width=3)
+
+              pred_img = Image.new("L", (x_max, y_max), 0)
+              pred_draw = ImageDraw.Draw(pred_img)
+              for contour in measure.find_contours(pred[..., 0], 0.7):
+                pred_draw.polygon([(x,y) for y,x in contour],
+                                  fill=0, outline=255, width=3)
+              mask_img = np.asarray(mask_img)
+              pred_img = np.asarray(pred_img)
+              annot = np.stack([
+                mask_img,
+                pred_img,
+                np.zeros_like(mask_img),
+              ], axis=-1)
+              rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
+                                        rgb, annot)
+              rgb_with_annot = Image.fromarray(rgb_with_annot)
+              wandb.log({f'contour/{name}': wandb.Image(rgb_with_annot),
+                         f'imgs/{name}': wandb.Image(stacked),
+              }, step=step)
 

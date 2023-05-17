@@ -1,99 +1,130 @@
-from functools import partial
+import yaml
+from pathlib import Path
+
+import numpy as np
 import jax
 import jax.numpy as jnp
+from collections import defaultdict
+from PIL import Image, ImageDraw
+from skimage import measure
+from shapely import Polygon
+import geopandas as gpd
 
-from lib import losses
-from lib.utils import prep
-from lib.diffusion import ddim_sample
-from einops import repeat
+import xarray
+import rioxarray
+from tqdm import tqdm
+from munch import munchify
+import argparse
+from train import test_step
 
-from jax.experimental.host_callback import id_print
-
-
-METRICS = dict(
-    mae=losses.mae,
-    rmse=losses.rmse,
-    symmetric_mae=losses.symmetric_mae,
-    symmetric_rmse=losses.symmetric_rmse,
-)
+from lib import config, utils
+from lib.data_loading import get_loader
 
 
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser(prog="Permafrost SSL Evaluation Script")
+  parser.add_argument('run_dir', nargs='+', help='Run directories to evaluate', type=Path)
+  args = parser.parse_args()
 
-if __name__ == "__main__":
-    run = Path(sys.argv[1])
-    assert run.exists()
-    do_output = True
+  config.update(yaml.safe_load((args.run_dir[0] / 'config.yml').open()))
+  data_val   = get_loader(config.datasets.val)
 
-    config = yaml.load(open(run / "config.yml"), Loader=yaml.SafeLoader)
-    if "dataset" in config and config["dataset"] == "TUD-MS":
-        # datasets = ['TEST' , '', 'validation_zhang']
-        loaders = {"TUD-MS": get_loader(4, 1, "test", config, None, subtiles=False)}
-    else:
-        config["dataset"] = "CALFIN"
-        config["data_root"] = "../CALFIN/training/data"
-        config["data_channels"] = [2]
+  sample_data, sample_meta = next(iter(data_val))
+  print('Building model')
+  S, params = utils.get_model(jax.tree_map(lambda x: x[:1], sample_data['Sentinel2']))
+  net = S.apply
 
-        datasets = ["validation", "validation_baumhoer", "validation_zhang"]
-        loaders = {
-            d: get_loader(4, 1, d, config, None, subtiles=False) for d in datasets
-        }
+  for run_dir in args.run_dir:
+    print(f'Loading Weights for {run_dir.name}')
+    state = utils.load_state(run_dir / 'latest.pkl')
+    # Validate
+    val_key = jax.random.PRNGKey(27)
+    val_metrics = defaultdict(list)
+    val_outputs = defaultdict(list)
 
-        config["dataset"] = "TUD"
-        config["data_root"] = "../aicore/uc1/data/"
-        config["data_channels"] = ["SPECTRAL/BANDS/STD_2s_B8_8b"]
-        loaders["TUD_test"] = get_loader(4, 1, "test", config, subtiles=False)
+    print('Starting eval for', run_dir.name)
+    for step_test, (batch, meta) in enumerate(tqdm(data_val)):
+        val_key, subkey = jax.random.split(val_key)
+        metrics, preds = test_step(batch, state, subkey, net)
 
-    for sample_batch in list(loaders.values())[0]:
-        img, *_ = prep(sample_batch)
-        break
+        for m in metrics:
+          val_metrics[m].append(metrics[m])
 
-    S, params, buffers = models.get_model(config, img)
-    state = utils.load_state(run / "latest.pkl")
-    net = S.apply
+        for i in range(preds.shape[0]):
+          val_outputs[meta['source_file'][i]].append({
+            'Prediction': preds[i],
+            **jax.tree_map(lambda x: x[i], batch),
+            **jax.tree_map(lambda x: x[i], meta),
+          })
 
-    img_root = run / "imgs"
-    img_root.mkdir(exist_ok=True)
+    for tile, data in val_outputs.items():
+      name = Path(tile).stem
+      source = xarray.open_dataset(tile, decode_coords='all')
+      tx = np.asarray(source.rio.transform().column_vectors)
 
-    all_metrics = {}
-    for dataset, loader in loaders.items():
-        test_key = jax.random.PRNGKey(27)
-        test_metrics = {}
+      def apply_tx(points):
+        x, y = points.T
+        o = np.ones_like(y)
+        points = np.stack([y, x, o], axis=1)
+        return Polygon(points @ tx)
 
-        img_dir = img_root / dataset
-        img_dir.mkdir(exist_ok=True)
-        dsidx = 0
-        for batch in tqdm(loader, desc=dataset):
-            test_key, subkey = jax.random.split(test_key)
-            metrics, output = test_step(batch, state, subkey, net)
+      y_max = max(d['y1'] for d in data)
+      x_max = max(d['x1'] for d in data)
 
-            for m in metrics:
-                if m not in test_metrics:
-                    test_metrics[m] = []
-                test_metrics[m].append(metrics[m])
+      rgb  = np.zeros([y_max, x_max, 3], dtype=np.uint8)
+      mask = np.zeros([y_max, x_max, 1], dtype=np.uint8)
+      pred = np.zeros([y_max, x_max, 1], dtype=np.uint8)
 
-            for i in range(len(output["imagery"])):
-                o = jax.tree_map(lambda x: x[i], output)
-                raw = Image.fromarray(
-                    (255 * np.asarray(o["imagery"][..., 0])).astype(np.uint8)
-                )
-                raw_path = Path(f"base_imgs/{dataset}/{dsidx:03d}.jpg")
-                raw_path.parent.mkdir(exist_ok=True, parents=True)
-                raw.save(f"base_imgs/{dataset}/{dsidx:03d}.jpg")
-                base = 0.5 * (o["imagery"] + 1.0)
-                logging.draw_image(
-                    base, o["contour"], o["snake"], img_dir / f"{dsidx:03d}.pdf"
-                )
-                logging.draw_steps(
-                    base,
-                    o["contour"],
-                    o["snake_steps"],
-                    img_dir / f"{dsidx:03d}_steps.pdf",
-                )
-                dsidx += 1
+      for patch in data:
+        y0, x0, y1, x1 = [patch[k] for k in ['y0', 'x0', 'y1', 'x1']]
+        patch_rgb = patch['Sentinel2'][:, :, [3,2,1]]
+        patch_rgb = np.clip(2 * 255 * patch_rgb, 0, 255).astype(np.uint8)
+        patch_mask = np.clip(255 * patch['Mask'], 0, 255).astype(np.uint8)
+        patch_pred = np.clip(255 * patch['Prediction'], 0, 255).astype(np.uint8)
 
-        logging.log_metrics(test_metrics, dataset, 0, do_wandb=False)
-        for m in test_metrics:
-            all_metrics[f"{dataset}/{m}"] = np.mean(test_metrics[m])
+        rgb[y0:y1, x0:x1]  = patch_rgb
+        mask[y0:y1, x0:x1] = patch_mask
+        pred[y0:y1, x0:x1] = patch_pred
 
-    with (run / "new_metrics.json").open("w") as f:
-        print(all_metrics, file=f)
+      # stacked = np.concatenate([
+      #   rgb,
+      #   np.concatenate([
+      #     mask,
+      #     pred,
+      #     np.zeros_like(mask)
+      #   ], axis=-1),
+      # ], axis=1)
+
+      # stacked = Image.fromarray(stacked)
+
+      # mask_img = Image.new("L", (x_max, y_max), 0)
+      # mask_draw = ImageDraw.Draw(mask_img)
+
+      # for contour in measure.find_contours(mask[..., 0], 0.5):
+      #   mask_draw.polygon([(x,y) for y,x in contour],
+      #                     fill=0, outline=255, width=3)
+
+      # pred_img = Image.new("L", (x_max, y_max), 0)
+      # pred_draw = ImageDraw.Draw(pred_img)
+
+      contours = measure.find_contours(pred[..., 0], 0.7)
+      projected = [apply_tx(points) for points in contours if len(points) >= 4]
+      gdf = gpd.GeoDataFrame(geometry=projected, crs=source.rio.crs)
+      print(f'Saving to eval/{name}_{run_dir.name}.gpkg')
+      gdf.to_file(f'eval/{name}_{run_dir.name}.gpkg')
+      # for contour in measure.find_contours(pred[..., 0], 0.7):
+      #   pred_draw.polygon([(x,y) for y,x in contour],
+      #                     fill=0, outline=255, width=3)
+      # mask_img = np.asarray(mask_img)
+      # pred_img = np.asarray(pred_img)
+      # annot = np.stack([
+      #   mask_img,
+      #   pred_img,
+      #   np.zeros_like(mask_img),
+      # ], axis=-1)
+      # rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
+      #                           rgb, annot)
+      # rgb_with_annot = Image.fromarray(rgb_with_annot)
+
+      # rgb_with_annot.save(f'eval/contour_{name}_{run_dir.name}.jpg')
+      # stacked.save(f'eval/mask_{name}_{run_dir.name}.jpg')

@@ -15,12 +15,14 @@ from .utils import shuffle_loop, deterministic_loop
 
 
 class NCDataset(Dataset):
-  def __init__(self, netcdf_path, config):
+  def __init__(self, netcdf_path, config, ):
     self.netcdf_path = netcdf_path
     self.tile_size = config.tile_size
     self.datasets = config.datasets
-    self.data = xarray.open_dataset(netcdf_path, cache=False)
+    self.data = xarray.open_dataset(netcdf_path)
     self.sampling_mode = config.sampling_mode
+
+    self.is_temporal = 'time' in self.data.dims
 
     self.H, self.W = len(self.data.y), len(self.data.x)
     self.H_tile = self.H // self.tile_size
@@ -68,6 +70,7 @@ class NCDataset(Dataset):
       x0 = int(torch.randint(x_start, x_end, ()))
     else:
       raise ValueError(f'Unsupported tiling mode: {self.sampling_mode!r}')
+
     y1 = y0 + self.tile_size
     x1 = x0 + self.tile_size
 
@@ -76,10 +79,22 @@ class NCDataset(Dataset):
       'y0': y0, 'x0': x0,
       'y1': y1, 'x1': x1,
     }
-    tile = {k: self.data[k][:, y0:y1, x0:x1].fillna(0).values for k in self.datasets}
-    tile = {k: rearrange(v, 'C H W -> H W C') for k, v in tile.items()}
-    return tile, metadata
 
+    if self.is_temporal:
+      if self.sampling_mode == 'deterministic':
+        t = len(self.data['time']) // 2
+      else:
+        t = int(torch.randint(0, len(self.data['time']), ()))
+
+      metadata['t'] = t
+
+      tile = {k: self.data['Mask'][:, y0:y1, x0:x1] if k == 'Mask' else
+                 self.data[k][t, :, y0:y1, x0:x1]
+              for k in self.datasets}
+    else:
+      tile = {k: self.data[k][:, y0:y1, x0:x1] for k in self.datasets}
+    tile = {k: rearrange(v.fillna(0).values, 'C H W -> H W C') for k, v in tile.items()}
+    return tile, metadata
 
   def __len__(self):
     return self.H_tile * self.W_tile
@@ -87,8 +102,15 @@ class NCDataset(Dataset):
 
 def get_loader(config):
   root = config.root
-  scene_names = config.scenes
-  scenes = [NCDataset(f'{root}/{scene}.nc', config) for scene in scene_names]
+  scene_globs = config.scenes
+  scenes = []
+  for glob in scene_globs:
+    if not glob.endswith('.nc'):
+      glob += '.nc'
+    globbed_scenes = [NCDataset(scene_name, config) for scene_name in Path(root).glob(glob)]
+    if not globbed_scenes:
+      print('No scenes found for', root, glob)
+    scenes += globbed_scenes
   all_data = ConcatDataset(scenes)
 
   if config.sampling_mode == 'deterministic':
@@ -116,7 +138,6 @@ def numpy_collate(batch):
     return {k: numpy_collate([sample[k] for sample in batch]) for k in batch[0]}
   else:
     return np.array(batch)
-
 
 
 if __name__ == '__main__':

@@ -40,7 +40,7 @@ def load_state(checkpoint_path):
 def get_model(*dummy_in, seed=jax.random.PRNGKey(39)):
   model_cls = getattr(models, config.model.type)
   model = hk.without_apply_rng(hk.transform(lambda x: model_cls()(x)))
-  params = model.init(seed, *jax.tree_map(lambda x: x[:1], dummy_in))
+  params = jax.jit(model.init)(seed, *jax.tree_map(lambda x: x[:1], dummy_in))
 
   return model, params
 
