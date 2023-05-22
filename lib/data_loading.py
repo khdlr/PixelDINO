@@ -28,7 +28,7 @@ class NCDataset(Dataset):
     self.H_tile = self.H // self.tile_size
     self.W_tile = self.W // self.tile_size
 
-    if self.sampling_mode == 'targets_only':
+    if self.sampling_mode.startswith('targets_only'):
       targets = (self.data.Mask == 1).squeeze('mask_band').values
       # Find Bounding boxes of targets
       contours = find_contours(targets)
@@ -47,7 +47,7 @@ class NCDataset(Dataset):
     elif self.sampling_mode == 'random':
       y0 = int(torch.randint(0, self.H - self.tile_size, ()))
       x0 = int(torch.randint(0, self.W - self.tile_size, ()))
-    elif self.sampling_mode == 'targets_only':
+    elif self.sampling_mode.startswith('targets_only'):
       bbox_idx = int(torch.randint(0, len(self.bboxes), ()))
       ymin, xmin, ymax, xmax = self.bboxes[bbox_idx]
 
@@ -81,7 +81,7 @@ class NCDataset(Dataset):
     }
 
     if self.is_temporal:
-      if self.sampling_mode == 'deterministic':
+      if self.sampling_mode in ('deterministic', 'targets_only_singletime'):
         t = len(self.data['time']) // 2
       else:
         t = int(torch.randint(0, len(self.data['time']), ()))
