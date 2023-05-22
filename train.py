@@ -41,7 +41,7 @@ def get_loss_fn(mode):
   return getattr(losses, name)
 
 
-jax.jit
+@jax.jit
 def train_step(labelled, unlabelled, state, key):
   _, optimizer = get_optimizer()
 
