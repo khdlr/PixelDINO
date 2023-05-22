@@ -32,10 +32,11 @@ datasets:
     tile_size: 256
     threads: 8
     sampling_mode: random
-    root: '/data/RTS/s2_unlabelled_4w/'
+    root: '/data/RTS/s2_4w/'
     datasets: ['Sentinel2']
     scenes:
-      - 08WMA_2019
+      - Horton/*
+      # - 08WMA_2019
       # - 11XMB_2018
       # - 40XDG_2018
       # - 49XEE_2018
