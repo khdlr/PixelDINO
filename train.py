@@ -180,7 +180,7 @@ if __name__ == '__main__':
           val_outputs = defaultdict(list)
           for step_test, (batch, meta) in enumerate(data_val):
               val_key, subkey = jax.random.split(val_key)
-              metrics, preds = test_step(batch, state, subkeys)
+              metrics, preds = test_step(batch, state, subkey)
 
               for m in metrics:
                 val_metrics[m].append(metrics[m])
