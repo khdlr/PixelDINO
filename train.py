@@ -142,7 +142,7 @@ if __name__ == '__main__':
 
   state = TrainingState(params=params, opt=opt_init(params))
 
-  wandb.init(project=f'RTS SSL', config=config, )
+  wandb.init(project=f'RTS SSL', config=config, name=args.name)
 
   run_dir = Path(f'runs/{args.name}/')
   assert not run_dir.exists(), f"Previous run exists at {run_dir}"
