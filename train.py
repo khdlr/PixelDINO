@@ -50,14 +50,15 @@ def train_step(labelled, unlabelled, state, key):
   img_l   = batch_l['Sentinel2']
   mask_l  = batch_l['Mask']
   img_u   = prep(unlabelled, augment_key=aug_key_2)['Sentinel2']
+  img_d   = distort({'Sentinel2': img_u}, aug_key_3)['Sentinel2']
 
   def get_loss(params):
-    pred_l = model(params, img_l)
-    pred_u = model(params, img_u)
+    imgs = jnp.concatenate([img_l, img_u, img_d], axis=0)
+    preds = model(params, imgs)
+    pred_l, pred_u, pred_d = jnp.split(preds, np.cumsum([x.shape[0] for x in [img_l, img_u]]))
 
-    distorted = distort({'Sentinel2': img_u, 'Mask': pred_u}, aug_key_3)
-    img_d  = distorted['Sentinel2']
-    mask_d = jax.nn.sigmoid(distorted['Mask'])
+    mask_d = distort({'Mask': pred_u}, aug_key_3)['Mask']
+    mask_d = jax.nn.sigmoid(mask_d)
     mask_d = jnp.where( mask_d > 0.8,  1,
              jnp.where( mask_d < 0.2,  0,
                                       -1))
@@ -120,6 +121,9 @@ if __name__ == '__main__':
   parser.add_argument('-f', '--skip-git-check', action='store_true')
   args = parser.parse_args()
 
+  run_dir = Path(f'runs/{args.name}/')
+  assert not run_dir.exists(), f"Previous run exists at {run_dir}"
+
   torch.manual_seed(args.seed)
   train_key = jax.random.PRNGKey(args.seed)
   persistent_val_key = jax.random.PRNGKey(27)
@@ -144,8 +148,6 @@ if __name__ == '__main__':
 
   wandb.init(project=f'RTS SSL', config=config, name=args.name)
 
-  run_dir = Path(f'runs/{args.name}/')
-  assert not run_dir.exists(), f"Previous run exists at {run_dir}"
   run_dir.mkdir(parents=True)
   config.run_id = wandb.run.id
   with open(run_dir / 'config.yml', 'w') as f:
