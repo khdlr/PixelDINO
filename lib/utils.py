@@ -87,7 +87,7 @@ def distort(batch, augment_key):
 
     all_types = {
         'Sentinel2': augmax.InputType.IMAGE,
-        'Mask': augmax.InputType.MASK,
+        'Mask': augmax.InputType.IMAGE,
     }
     input_types = {k: all_types[k] for k in batch}
     chain = augmax.Chain(*ops, input_types=input_types)

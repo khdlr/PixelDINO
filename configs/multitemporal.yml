@@ -32,7 +32,7 @@ datasets:
     tile_size: 256
     threads: 8
     sampling_mode: random
-    root: '/data/RTS/s2_4w/'
+    root: '/mnt/SSD1/konrad/data/RTS/s2_4w/'
     datasets: ['Sentinel2']
     scenes:
       - Horton/*
@@ -46,7 +46,7 @@ datasets:
     tile_size: 256
     threads: 8
     sampling_mode: deterministic
-    root: '/data/RTS/s2_4w'
+    root: '/mnt/SSD1/konrad/data/RTS/s2_4w'
     datasets: ['Sentinel2', 'Mask']
     scenes:
       - Herschel/*
@@ -55,7 +55,7 @@ datasets:
     tile_size: 256
     threads: 8
     sampling_mode: targets_only
-    root: '/data/RTS/s2_4w'
+    root: '/mnt/SSD1/konrad/data/RTS/s2_4w'
     datasets: ['Sentinel2', 'Mask']
     scenes:
       - Banks Island/*
