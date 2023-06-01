@@ -27,13 +27,6 @@ class Sentinel2(TileSource):
         # But other tools don't seem to be compatible with that (i.e. QGIS)
         # data = data.assign_coords({'band': list(data.long_name[:13])})
 
-        data = data / 255
-        data.encoding.update({
-          'chunksizes': (13, 128, 128),
-          'scale_factor': 1/255,
-          'offset': 0,
-          'dtype': 'uint8',
-        })
         data.attrs['date'] = str(pd.to_datetime(scene.id.split('_')[-3]))
         return data
 
@@ -46,12 +39,11 @@ class Sentinel2(TileSource):
             if bounds is None:
               # Multiply operation deletes the footprint for some reason
               bounds = gd.MaskedImage(img).footprint
-            img = img.multiply(255 / 3000)
             img = gd.MaskedImage(img)
             safe_download(img, out_path,
                 region=bounds,
                 scale=10,
-                dtype='uint8',
+                dtype='uint16',
                 max_tile_size=2,
                 max_tile_dim=2000,
             )
@@ -180,11 +172,6 @@ class Sentinel2(TileSource):
         )
 
         metadata = metadata_all = imgs.properties
-
-        if len(metadata) > 4:
-          metadata = sorted(metadata, key=lambda k: metadata[k]['CLOUDLESS_PORTION'] + metadata[k]['FILL_PORTION'], reverse=True)[:4]
-
-        print(f'Found {len(metadata_all)} scenes, proceeding with {len(metadata)} scenes...')
 
         def build_scene(s2_id, _cache_path):
           Sentinel2.download_tile(_cache_path, img)

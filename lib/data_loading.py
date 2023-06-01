@@ -3,127 +3,67 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import xarray
-import torch
+import webdataset as wds
+from webdataset.multi import MultiLoader
+# import tensorflow_datasets as tfds
 import numpy as np
-from torch.utils.data import DataLoader, ConcatDataset, Dataset
-from einops import rearrange
 from tqdm import tqdm
+from einops import rearrange
+from PIL import Image
+import re
 from pathlib import Path
-from skimage.measure import find_contours
-from .utils import shuffle_loop, deterministic_loop
+from turbojpeg import TurboJPEG
 
+jpeg = TurboJPEG()
 
-class NCDataset(Dataset):
-  def __init__(self, netcdf_path, config, ):
-    self.netcdf_path = netcdf_path
-    self.tile_size = config.tile_size
-    self.datasets = config.datasets
-    self.data = xarray.open_dataset(netcdf_path)
-    self.sampling_mode = config.sampling_mode
-
-    self.is_temporal = 'time' in self.data.dims
-
-    self.H, self.W = len(self.data.y), len(self.data.x)
-    self.H_tile = self.H // self.tile_size
-    self.W_tile = self.W // self.tile_size
-
-    if self.sampling_mode.startswith('targets_only'):
-      targets = (self.data.Mask == 1).squeeze('mask_band').values
-      # Find Bounding boxes of targets
-      contours = find_contours(targets)
-
-      self.bboxes = []
-      for contour in contours:
-        ymin, xmin = np.floor(contour.min(axis=0)).astype(int)
-        ymax, xmax = np.ceil(contour.max(axis=0)).astype(int)
-        self.bboxes.append([ymin, xmin, ymax, xmax])
-
-  def __getitem__(self, idx):
-    if self.sampling_mode == 'deterministic':
-      y_tile, x_tile = divmod(idx, self.W_tile)
-      y0 = y_tile * self.tile_size
-      x0 = x_tile * self.tile_size
-    elif self.sampling_mode == 'random':
-      y0 = int(torch.randint(0, self.H - self.tile_size, ()))
-      x0 = int(torch.randint(0, self.W - self.tile_size, ()))
-    elif self.sampling_mode.startswith('targets_only'):
-      bbox_idx = int(torch.randint(0, len(self.bboxes), ()))
-      ymin, xmin, ymax, xmax = self.bboxes[bbox_idx]
-
-      y_start = max(0, ymin - self.tile_size)
-      y_end   = min(self.H - self.tile_size, ymax)
-
-      x_start = max(0, xmin - self.tile_size)
-      x_end   = min(self.W - self.tile_size, xmax )
-
-      if y_start >= y_end or x_start >= x_end:
-        print("Nasty BBox!")
-        print(f'y range: {ymin} -- {ymax}')
-        print(f'x range: {xmin} -- {xmax}')
-        print('Derived:')
-        print(f'Sample y from [{y_start}, {y_end})')
-        print(f'Sample x from [{x_start}, {x_end})')
-        print(f'Image size: {self.H} x {self.W}')
-
-      y0 = int(torch.randint(y_start, y_end, ()))
-      x0 = int(torch.randint(x_start, x_end, ()))
-    else:
-      raise ValueError(f'Unsupported tiling mode: {self.sampling_mode!r}')
-
-    y1 = y0 + self.tile_size
-    x1 = x0 + self.tile_size
-
-    metadata = {
-      'source_file': self.netcdf_path,
-      'y0': y0, 'x0': x0,
-      'y1': y1, 'x1': x1,
-    }
-
-    if self.is_temporal:
-      if self.sampling_mode in ('deterministic', 'targets_only_singletime'):
-        t = len(self.data['time']) // 2
-      else:
-        t = int(torch.randint(0, len(self.data['time']), ()))
-
-      metadata['t'] = t
-
-      tile = {k: self.data['Mask'][:, y0:y1, x0:x1] if k == 'Mask' else
-                 self.data[k][t, :, y0:y1, x0:x1]
-              for k in self.datasets}
-    else:
-      tile = {k: self.data[k][:, y0:y1, x0:x1] for k in self.datasets}
-    tile = {k: rearrange(v.fillna(0).values, 'C H W -> H W C') for k, v in tile.items()}
-    return tile, metadata
-
-  def __len__(self):
-    return self.H_tile * self.W_tile
-
-
-def get_loader(config):
-  root = config.root
-  scene_globs = config.scenes
-  scenes = []
-  for glob in scene_globs:
-    if not glob.endswith('.nc'):
-      glob += '.nc'
-    globbed_scenes = [NCDataset(scene_name, config) for scene_name in Path(root).glob(glob)]
-    if not globbed_scenes:
-      print('No scenes found for', root, glob)
-    scenes += globbed_scenes
-  all_data = ConcatDataset(scenes)
-
-  if config.sampling_mode == 'deterministic':
-    sampler = None
+def decode(name_buf):
+  name, buf = name_buf
+  if name.endswith('.jpg'):
+    return name, jpeg.decode(buf.read())
   else:
-    sampler = shuffle_loop(len(all_data))
+    return name, np.asarray(Image.open(buf))
 
-  return DataLoader(all_data,
-      sampler=sampler,
-      batch_size=config.batch_size,
-      num_workers=config.threads,
-      collate_fn=numpy_collate,
-      pin_memory=True)
+
+def prepare(sample):
+  s2 = np.concatenate([
+    sample['156.jpg'][..., :1],
+    sample['rgb.jpg'][..., ::-1],
+    sample['156.jpg'][..., 1:],
+    sample['788a.jpg'],
+    sample['101112.jpg']
+  ], axis=-1)
+  
+  *scene, x, y = sample['__key__'].split('_')
+  scene = '_'.join(scene)
+  x = int(x)
+  y = int(y)
+  
+  out = dict(
+    scene=scene,
+    x=x,
+    y=y,
+    s2=s2,
+    mask=rearrange(sample['mask.png'], 'H W -> H W 1')
+  )
+  return out
+
+
+def split(gen):
+  for sample in gen:
+    scn = sample['scene']
+    x, y = sample['x'], sample['y']
+    s2 = sample['s2']
+    mask = sample['mask']
+
+    for dy in [0, 96, 192]:
+      for dx in [0, 96, 192]:
+        yield dict(
+          scene=scn,
+          x = x+dx,
+          y = y+dy,
+          s2 = s2[dy:dy+192, dx:dx+192],
+          mask = mask[dy:dy+192, dx:dx+192],
+        )
 
 
 def numpy_collate(batch):
@@ -140,12 +80,57 @@ def numpy_collate(batch):
     return np.array(batch)
 
 
-if __name__ == '__main__':
-    import yaml
-    from munch import munchify
+def get_loader_pytorch(config, cycle=False):
+  path = Path(config['path'])
+  dp = FileLister(str(path.parent), path.name)
 
-    config = munchify(yaml.safe_load(open('config.yml')))
-    dataset = get_loader(config.datasets.train_unlabelled)
-    # loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
-    for i in tqdm(dataset):
-      pass
+  if cycle:
+    dp = dp.cycle()
+  if config['shuffle']:
+    dp = dp.shuffle(buffer_size=100)
+  dp = dp.sharding_filter()
+  dp = FileOpener(dp, mode='b')
+  dp = dp.load_from_tar().map(decode).webdataset()
+  dp = dp.map(prepare)
+  if config['shuffle']:
+    dp = dp.shuffle(buffer_size=500)
+  dp = dp.flatmap(split)
+  if config['shuffle']:
+    dp = dp.shuffle(buffer_size=800)
+  dp = dp.batch(config['batch_size'])
+  dp = dp.map(numpy_collate)
+  # dp = dp.prefetch(8)
+  # rs = MultiProcessingReadingService(num_workers=config['threads'])
+  # loader = DataLoader2(dp, reading_service=rs)
+
+  return dp
+
+
+def get_loader(config, cycle=False):
+  ds = wds.DataPipeline(
+    wds.SimpleShardList(config['path']),
+    # cycle,
+    # wds.shuffle(100),
+    wds.split_by_worker,
+    wds.tarfile_to_samples(),
+    # wds.shuffle(500),
+    wds.decode('rgb'),
+    wds.map(prepare),
+    split,
+    # wds.shuffle(800),
+    wds.batched(config['batch_size'], numpy_collate, partial=False),
+  )
+  return ds
+
+
+if __name__ == '__main__':
+  config = dict(
+    batch_size=16,
+    threads=0,
+    shuffle=True,
+    path='/mnt/SSD1/konrad/data/RTS/webds/train-st-{000..002}.tar'
+  )
+
+  dataset = get_loader(config, cycle=True)
+  for i in tqdm(dataset):
+    pass

@@ -46,33 +46,34 @@ def get_model(*dummy_in, seed=jax.random.PRNGKey(39)):
 
 
 def prep(batch, augment_key=None):
-    ops = []
-    if augment_key is not None:
-        ops += [
-            augmax.HorizontalFlip(),
-            augmax.VerticalFlip(),
-            augmax.Rotate90(),
-        ]
-    # if augment: ops += [
-    #     augmax.ChannelShuffle(p=0.1),
-    #     augmax.Solarization(p=0.1),
-    # ]
+  ops = []
+  if augment_key is not None:
+      ops += [
+          augmax.HorizontalFlip(),
+          augmax.VerticalFlip(),
+          augmax.Rotate90(),
+      ]
+  ops += [
+    augmax.ByteToFloat(),
+  ]
 
-    all_types = {
-        'Sentinel2': augmax.InputType.IMAGE,
-        'Mask': augmax.InputType.MASK,
-    }
-    input_types = {k: all_types[k] for k in batch}
-    chain = augmax.Chain(*ops, input_types=input_types)
-    if augment_key is None:
-        augment_key = jax.random.PRNGKey(0)
+  all_types = {
+      's2': augmax.InputType.IMAGE,
+      'mask': augmax.InputType.MASK,
+  }
+  batch = {k: batch[k] for k in batch if k in all_types}
 
-    batch_size = jax.tree_util.tree_leaves(batch)[0].shape[0]
-    subkeys = jax.random.split(augment_key, batch_size)
-    transformation = jax.vmap(chain)
-    outputs = transformation(subkeys, batch)
+  input_types = {k: all_types[k] for k in batch}
+  chain = augmax.Chain(*ops, input_types=input_types)
+  if augment_key is None:
+      augment_key = jax.random.PRNGKey(0)
 
-    return outputs
+  batch_size = jax.tree_util.tree_leaves(batch)[0].shape[0]
+  subkeys = jax.random.split(augment_key, batch_size)
+  transformation = jax.vmap(chain)
+  outputs = transformation(subkeys, batch)
+
+  return outputs
 
 
 def distort(batch, augment_key):
@@ -86,8 +87,8 @@ def distort(batch, augment_key):
     ]
 
     all_types = {
-        'Sentinel2': augmax.InputType.IMAGE,
-        'Mask': augmax.InputType.IMAGE,
+        's2': augmax.InputType.IMAGE,
+        'mask': augmax.InputType.MASK,
     }
     input_types = {k: all_types[k] for k in batch}
     chain = augmax.Chain(*ops, input_types=input_types)
