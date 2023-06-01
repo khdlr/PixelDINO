@@ -3,125 +3,69 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import webdataset as wds
-from webdataset.multi import MultiLoader
-# import tensorflow_datasets as tfds
-import numpy as np
 from tqdm import tqdm
-from einops import rearrange
-from PIL import Image
-import re
-from pathlib import Path
-from turbojpeg import TurboJPEG
-
-jpeg = TurboJPEG()
-
-def decode(name_buf):
-  name, buf = name_buf
-  if name.endswith('.jpg'):
-    return name, jpeg.decode(buf.read())
-  else:
-    return name, np.asarray(Image.open(buf))
+import tensorflow as tf
+import tensorflow_datasets as tfds
 
 
+@tf.function
 def prepare(sample):
-  s2 = np.concatenate([
-    sample['156.jpg'][..., :1],
-    sample['rgb.jpg'][..., ::-1],
-    sample['156.jpg'][..., 1:],
-    sample['788a.jpg'],
-    sample['101112.jpg']
+  s2 = tf.concat([
+    sample['156'][..., :1],
+    sample['rgb'][..., ::-1],
+    sample['156'][..., 1:],
+    sample['788a'],
+    sample['101112']
   ], axis=-1)
-  
-  *scene, x, y = sample['__key__'].split('_')
-  scene = '_'.join(scene)
-  x = int(x)
-  y = int(y)
-  
+
   out = dict(
-    scene=scene,
-    x=x,
-    y=y,
+    region=sample['region'],
+    source=sample['source'],
+    date=sample['date'],
+    box=sample['box'],
     s2=s2,
-    mask=rearrange(sample['mask.png'], 'H W -> H W 1')
+    mask=sample['mask'],
   )
   return out
 
-
-def split(gen):
-  for sample in gen:
-    scn = sample['scene']
-    x, y = sample['x'], sample['y']
-    s2 = sample['s2']
-    mask = sample['mask']
-
-    for dy in [0, 96, 192]:
-      for dx in [0, 96, 192]:
-        yield dict(
-          scene=scn,
-          x = x+dx,
-          y = y+dy,
-          s2 = s2[dy:dy+192, dx:dx+192],
-          mask = mask[dy:dy+192, dx:dx+192],
-        )
-
-
-def numpy_collate(batch):
-  """Collate tensors as numpy arrays, taken from
-  https://jax.readthedocs.io/en/latest/notebooks/Neural_Network_and_Data_Loading.html"""
-  if isinstance(batch[0], np.ndarray):
-    return np.stack(batch)
-  elif isinstance(batch[0], (tuple, list)):
-    transposed = zip(*batch)
-    return [numpy_collate(samples) for samples in transposed]
-  elif isinstance(batch[0], dict):
-    return {k: numpy_collate([sample[k] for sample in batch]) for k in batch[0]}
-  else:
-    return np.array(batch)
-
-
-def get_loader_pytorch(config, cycle=False):
-  path = Path(config['path'])
-  dp = FileLister(str(path.parent), path.name)
-
-  if cycle:
-    dp = dp.cycle()
-  if config['shuffle']:
-    dp = dp.shuffle(buffer_size=100)
-  dp = dp.sharding_filter()
-  dp = FileOpener(dp, mode='b')
-  dp = dp.load_from_tar().map(decode).webdataset()
-  dp = dp.map(prepare)
-  if config['shuffle']:
-    dp = dp.shuffle(buffer_size=500)
-  dp = dp.flatmap(split)
-  if config['shuffle']:
-    dp = dp.shuffle(buffer_size=800)
-  dp = dp.batch(config['batch_size'])
-  dp = dp.map(numpy_collate)
-  # dp = dp.prefetch(8)
-  # rs = MultiProcessingReadingService(num_workers=config['threads'])
-  # loader = DataLoader2(dp, reading_service=rs)
-
-  return dp
-
-
-def get_loader(config, cycle=False):
-  ds = wds.DataPipeline(
-    wds.SimpleShardList(config['path']),
-    # cycle,
-    # wds.shuffle(100),
-    wds.split_by_worker,
-    wds.tarfile_to_samples(),
-    # wds.shuffle(500),
-    wds.decode('rgb'),
-    wds.map(prepare),
-    split,
-    # wds.shuffle(800),
-    wds.batched(config['batch_size'], numpy_collate, partial=False),
+@tf.function
+def split(sample):
+  y, x = sample['box'][..., 0], sample['box'][..., 1]
+  offsets = [(  0,   0), (  0, 96), (  0, 192),
+             ( 96,   0), ( 96, 96), ( 96, 192),
+             (192,   0), (192, 96), (192, 192),]
+  out = dict(
+    region = tf.stack([sample['region']] * 9),
+    source = tf.stack([sample['source']] * 9),
+    date   = tf.stack([sample['date']] * 9),
+    box = tf.stack([tf.stack([y+dy, x+dx, y+dy+192, x+dx+192], axis=-1) for dy, dx in offsets]),
+    s2 = tf.stack([sample['s2'][..., dy:dy+192, dx:dx+192, :] for dy, dx in offsets]),
+    mask = tf.stack([sample['mask'][..., dy:dy+192, dx:dx+192, :] for dy, dx in offsets]),
   )
-  return ds
+  return tf.data.Dataset.from_tensor_slices(out)
 
+
+def get_datasets(config_ds):
+  data = tfds.load('rts', shuffle_files=True)
+
+  datasets = {}
+  for key in config_ds:
+    conf = config_ds[key]
+    bs = conf['batch_size']
+    ds = data[conf['split']]
+    if key != 'val':
+      ds = ds.repeat()
+      ds = ds.shuffle(500)
+    ds = ds.batch(bs)
+    ds = ds.map(prepare, num_parallel_calls=tf.data.AUTOTUNE)
+    if key != 'val':
+      ds = ds.interleave(split)
+      ds = ds.unbatch()
+      ds = ds.shuffle(1024)
+      ds = ds.batch(bs)
+    ds = ds.prefetch(tf.data.AUTOTUNE)
+    datasets[key] = tfds.as_numpy(ds)
+  return datasets
 
 if __name__ == '__main__':
   config = dict(

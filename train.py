@@ -18,7 +18,7 @@ import wandb
 from tqdm import tqdm
 
 from munch import munchify
-from lib.data_loading import get_loader
+from lib.data_loading import get_datasets
 from lib import utils, logging, losses
 from lib.config_mod import config
 from lib.metrics import compute_premetrics
@@ -132,7 +132,7 @@ if __name__ == '__main__':
   # initialize data loading
   train_key, subkey = jax.random.split(train_key)
 
-  datasets = {k: get_loader(c, cycle=(k!='val')) for k, c in config['datasets'].items()}
+  datasets = get_datasets(config['datasets'])
   val_data = datasets.pop('val')
 
   S, params = utils.get_model(np.ones([1, 128, 128, 12]))
@@ -153,14 +153,14 @@ if __name__ == '__main__':
   generators = jax.tree_map(iter, datasets)
   trn_metrics = defaultdict(list)
   for step in tqdm(range(1, 1+config.train.steps), ncols=80):
-    # data = jax.tree_map(next, generators)
-    # data = {k: {'s2': v['s2'], 'mask': v['mask']} for k, v in data.items()}
+    data = jax.tree_map(next, generators)
+    data = {k: {'s2': v['s2'], 'mask': v['mask']} for k, v in data.items()}
 
-    # train_key, subkey = jax.random.split(train_key)
-    # terms, state = train_step(data, state, subkey)
+    train_key, subkey = jax.random.split(train_key)
+    terms, state = train_step(data, state, subkey)
 
-    # for k in terms:
-    #     trn_metrics[k].append(terms[k])
+    for k in terms:
+        trn_metrics[k].append(terms[k])
 
     # """
     # Metrics logging and Validation
@@ -183,10 +183,9 @@ if __name__ == '__main__':
           for m in metrics:
             val_metrics[m].append(metrics[m])
 
-          data['x1'] = data['x'] + data['s2'].shape[2]
-          data['y1'] = data['y'] + data['s2'].shape[1]
           for i in range(preds.shape[0]):
-            val_outputs[data['scene'][i]].append({
+            key = data['source'][i].decode('utf8')
+            val_outputs[key].append({
               'pred': preds[i],
               **jax.tree_map(lambda x: x[i], data),
             })
@@ -196,17 +195,17 @@ if __name__ == '__main__':
       if True or step % config.validation.image_frequency == 0:
         for tile, data in val_outputs.items():
           name = Path(tile).stem
-          y_max = max(d['y'] for d in data)
-          x_max = max(d['x'] for d in data)
+          y_max = max(d['box'][2] for d in data)
+          x_max = max(d['box'][3] for d in data)
 
           rgb  = np.zeros([y_max, x_max, 3], dtype=np.uint8)
           mask = np.zeros([y_max, x_max, 1], dtype=np.uint8)
           pred = np.zeros([y_max, x_max, 1], dtype=np.uint8)
 
           for patch in data:
-            y0, x0, y1, x1 = [patch[k] for k in ['y', 'x', 'y1', 'x1']]
+            y0, x0, y1, x1 = patch['box']
             patch_rgb = patch['s2'][:, :, [3,2,1]]
-            patch_rgb = np.clip(2 * 255 * patch_rgb, 0, 255).astype(np.uint8)
+            patch_rgb = np.clip(patch_rgb, 0, 255).astype(np.uint8)
             patch_mask = np.clip(255 * patch['mask'], 0, 255).astype(np.uint8)
             patch_pred = np.clip(255 * patch['pred'], 0, 255).astype(np.uint8)
 

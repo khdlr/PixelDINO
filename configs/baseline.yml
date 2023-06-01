@@ -30,10 +30,8 @@ datasets:
   val:
     batch_size: 16
     shuffle: false
-    threads: 0
-    path: '/mnt/SSD1/konrad/data/RTS/webds/val-000.tar'
+    split: val
   train:
     batch_size: 16
-    threads: 0
     shuffle: true
-    path: '/mnt/SSD1/konrad/data/RTS/webds/train-st-{000..002}.tar'
+    split: train

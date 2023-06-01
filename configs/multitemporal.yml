@@ -15,11 +15,11 @@ optimizer:
     end_value:  4.e-5
     decay_steps: 240_000
 
+loss_functions:
+  train: bce
+
 train:
   steps: 250_000
-  loss_supervised: bce
-  loss_semisupervised: noop
-  semisupervised_weight: 1
 
 validation:
   frequency: 1_000
@@ -27,45 +27,11 @@ validation:
 
 # Data args
 datasets:
-  train_unlabelled:
-    batch_size: 1
-    tile_size: 256
-    threads: 8
-    sampling_mode: random
-    root: '/mnt/SSD1/konrad/data/RTS/s2_4w/'
-    datasets: ['Sentinel2']
-    scenes:
-      - Horton/*
-      # - 08WMA_2019
-      # - 11XMB_2018
-      # - 40XDG_2018
-      # - 49XEE_2018
-      # - 53WMR_2019
   val:
     batch_size: 16
-    tile_size: 256
-    threads: 8
-    sampling_mode: deterministic
-    root: '/mnt/SSD1/konrad/data/RTS/s2_4w'
-    datasets: ['Sentinel2', 'Mask']
-    scenes:
-      - Herschel/*
-  train_labelled:
+    shuffle: false
+    split: val
+  train:
     batch_size: 16
-    tile_size: 256
-    threads: 8
-    sampling_mode: targets_only
-    root: '/mnt/SSD1/konrad/data/RTS/s2_4w'
-    datasets: ['Sentinel2', 'Mask']
-    scenes:
-      - Banks Island/*
-      - Chukotka/*
-      - Gydan/*
-      - Horton/*
-      - Kolguev/*
-      - Lena/*
-      - Lena Delta/*
-      - Novaya Zemlya/*
-      - Peel Plateau/*
-      - Taimyr/*
-      - Tuktoyaktuk/*
+    shuffle: true
+    split: train_mt
