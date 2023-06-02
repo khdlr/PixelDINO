@@ -5,14 +5,13 @@ from pathlib import Path
 import numpy as np
 import jax
 import jax.numpy as jnp
-jnp.ones(100)  # This is needed to force JAX to not use the torch cuda libraries
+import haiku as hk
 import optax
 from lib.lion import lion
 from collections import defaultdict
-from PIL import Image, ImageDraw
-from skimage import measure
-import torch
-import multiprocessing
+from PIL import Image
+from scipy.signal.windows import blackmanharris
+from einops import rearrange
 
 import wandb
 from tqdm import tqdm
@@ -123,7 +122,6 @@ if __name__ == '__main__':
   run_dir = Path(f'runs/{args.name}/')
   assert not run_dir.exists(), f"Previous run exists at {run_dir}"
 
-  torch.manual_seed(args.seed)
   train_key = jax.random.PRNGKey(args.seed)
   persistent_val_key = jax.random.PRNGKey(27)
 
@@ -165,91 +163,107 @@ if __name__ == '__main__':
     # """
     # Metrics logging and Validation
     # """
-    if step % config.validation.frequency == 0:
-      logging.log_metrics(trn_metrics, 'trn', step, do_print=False)
-      trn_metrics = defaultdict(list)
-      # Save Checkpoint
-      save_state(state, run_dir / f'latest.pkl')
+    if step % config.validation.frequency != 0:
+      continue
 
-      # Validate
-      val_key = persistent_val_key
-      val_metrics = defaultdict(list)
-      val_outputs = defaultdict(list)
-      for step_test, data in enumerate(val_data):
-          val_key, subkey = jax.random.split(val_key, 2)
-          data_inp = {'s2': data['s2'], 'mask': data['mask']}
-          metrics, preds = test_step(data_inp, state)
+    logging.log_metrics(trn_metrics, 'trn', step, do_print=False)
+    trn_metrics = defaultdict(list)
+    # Save Checkpoint
+    save_state(state, run_dir / f'step_{step:07d}.pkl')
+    save_state(state, run_dir / f'latest.pkl')
 
-          for m in metrics:
-            val_metrics[m].append(metrics[m])
+    # Validate
+    val_key = persistent_val_key
+    val_metrics = defaultdict(list)
+    val_outputs = defaultdict(list)
+    for step_test, data in enumerate(val_data):
+        val_key, subkey = jax.random.split(val_key, 2)
+        data_inp = {'s2': data['s2'], 'mask': data['mask']}
+        metrics, preds = test_step(data_inp, state)
 
-          for i in range(preds.shape[0]):
-            key = data['source'][i].decode('utf8')
-            val_outputs[key].append({
-              'pred': preds[i],
-              **jax.tree_map(lambda x: x[i], data),
-            })
+        for m in metrics:
+          val_metrics[m].append(metrics[m])
 
-      logging.log_metrics(val_metrics, 'val', step)
+        for i in range(preds.shape[0]):
+          key = data['source'][i].decode('utf8')
+          val_outputs[key].append({
+            'pred': preds[i],
+            **jax.tree_map(lambda x: x[i], data),
+          })
 
-      if True or step % config.validation.image_frequency == 0:
-        for tile, data in val_outputs.items():
-          name = Path(tile).stem
-          y_max = max(d['box'][2] for d in data)
-          x_max = max(d['box'][3] for d in data)
+    logging.log_metrics(val_metrics, 'val', step)
 
-          rgb  = np.zeros([y_max, x_max, 3], dtype=np.uint8)
-          mask = np.zeros([y_max, x_max, 1], dtype=np.uint8)
-          pred = np.zeros([y_max, x_max, 1], dtype=np.uint8)
+    if step % config.validation.image_frequency != 0:
+      continue
 
-          for patch in data:
-            y0, x0, y1, x1 = patch['box']
-            patch_rgb = patch['s2'][:, :, [3,2,1]]
-            patch_rgb = np.clip(patch_rgb, 0, 255).astype(np.uint8)
-            patch_mask = np.clip(255 * patch['mask'], 0, 255).astype(np.uint8)
-            patch_pred = np.clip(255 * patch['pred'], 0, 255).astype(np.uint8)
+    for tile, data in val_outputs.items():
+      name = Path(tile).stem
+      y_max = max(d['box'][3] for d in data)
+      x_max = max(d['box'][2] for d in data)
 
-            rgb[y0:y1, x0:x1]  = patch_rgb
-            mask[y0:y1, x0:x1] = patch_mask
-            pred[y0:y1, x0:x1] = patch_pred
+      weight = np.zeros([y_max, x_max, 1], dtype=np.float64)
+      rgb    = np.zeros([y_max, x_max, 3], dtype=np.float64)
+      mask   = np.zeros([y_max, x_max, 1], dtype=np.float64)
+      pred   = np.zeros([y_max, x_max, 1], dtype=np.float64)
+      window = np.concatenate([
+        np.linspace(0, 1, 96),
+        np.linspace(0, 1, 96)[::-1],
+      ]).reshape(-1, 1)
+      stencil = (window * window.T).reshape(192, 192, 1)
 
-          stacked = np.concatenate([
-            rgb,
-            np.concatenate([
-              mask,
-              pred,
-              np.zeros_like(mask)
-            ], axis=-1),
-          ], axis=1)
+      for patch in data:
+        x0, y0, x1, y1 = patch['box']
+        patch_rgb  = patch['s2'][:, :, [3,2,1]]
+        patch_rgb  = np.clip(patch_rgb, 0, 255)
+        patch_mask = np.where(patch['mask'] == 127, 64, patch['mask'])
+        patch_mask = np.clip(patch_mask, 0, 255)
+        patch_pred = np.clip(255 * patch['pred'], 0, 255)
 
-          stacked = Image.fromarray(stacked)
+        patch_rgb = np.asarray(patch_rgb).astype(np.float64)
+        patch_mask = np.asarray(patch_mask).astype(np.float64)
+        patch_pred = np.asarray(patch_pred).astype(np.float64)
 
-          @jax.jit
-          def mark_edges(mask):
-            padded = jnp.pad(mask, 1, mode='edge')
+        weight[y0:y1, x0:x1] += stencil
+        rgb[y0:y1, x0:x1]    += stencil * patch_rgb
+        mask[y0:y1, x0:x1]   += stencil * patch_mask
+        pred[y0:y1, x0:x1]   += stencil * patch_pred
 
-          mask_img = Image.new("L", (x_max, y_max), 0)
-          mask_draw = ImageDraw.Draw(mask_img)
-          for contour in measure.find_contours(mask[..., 0], 0.5):
-            mask_draw.polygon([(x,y) for y,x in contour],
-                              fill=0, outline=255, width=3)
+      weight = np.where(weight == 0, 1, weight)
+      rgb  = np.clip(rgb / weight, 0, 255).astype(np.uint8)
+      mask = np.clip(mask / weight, 0, 255).astype(np.uint8)
+      pred = np.clip(pred / weight, 0, 255).astype(np.uint8)
 
-          pred_img = Image.new("L", (x_max, y_max), 0)
-          pred_draw = ImageDraw.Draw(pred_img)
-          for contour in measure.find_contours(pred[..., 0], 0.7):
-            pred_draw.polygon([(x,y) for y,x in contour],
-                              fill=0, outline=255, width=3)
-          mask_img = np.asarray(mask_img)
-          pred_img = np.asarray(pred_img)
-          annot = np.stack([
-            mask_img,
-            pred_img,
-            np.zeros_like(mask_img),
-          ], axis=-1)
-          rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
-                                    rgb, annot)
-          rgb_with_annot = Image.fromarray(rgb_with_annot)
-          wandb.log({f'contour/{name}': wandb.Image(rgb_with_annot),
-                     f'imgs/{name}': wandb.Image(stacked),
-          }, step=step)
+      stacked = np.concatenate([
+        rgb,
+        np.concatenate([mask, pred, np.zeros_like(mask)], axis=-1),
+      ], axis=1)
+
+      stacked = Image.fromarray(stacked)
+
+      @jax.jit
+      def mark_edges(mask, threshold):
+        mask = (mask > threshold).astype(np.float32)
+        if mask.ndim > 2:
+          mask = mask[..., 0]
+        padded = jnp.pad(mask, 1, mode='edge')
+        padded = rearrange(padded, 'H W -> 1 H W 1')
+        min_pooled = -hk.max_pool(-padded, 3, 1, 'VALID')
+        max_pooled = hk.max_pool(padded, 3, 1, 'VALID')
+        is_edge = min_pooled != max_pooled
+        is_edge = rearrange(is_edge, '1 H W 1 -> H W')
+        return 255 * is_edge.astype(np.uint8)
+
+      mask_img = mark_edges(mask, 0.5)
+      pred_img = mark_edges(pred, 0.7)
+      annot = np.stack([
+        mask_img,
+        pred_img,
+        np.zeros_like(mask_img),
+      ], axis=-1)
+      rgb_with_annot = np.where(np.all(annot == 0, axis=-1, keepdims=True),
+                                rgb, annot)
+      rgb_with_annot = Image.fromarray(rgb_with_annot)
+      wandb.log({f'contour/{name}': wandb.Image(rgb_with_annot),
+                 f'imgs/{name}': wandb.Image(stacked),
+      }, step=step)
 

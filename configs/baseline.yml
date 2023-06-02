@@ -19,7 +19,7 @@ loss_functions:
   train: bce
 
 train:
-  steps: 250_000
+  steps: 200_000
 
 validation:
   frequency: 1_000

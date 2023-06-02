@@ -30,7 +30,7 @@ def prepare(sample):
 
 @tf.function
 def split(sample):
-  y, x = sample['box'][..., 0], sample['box'][..., 1]
+  x, y = sample['box'][..., 0], sample['box'][..., 1]
   offsets = [(  0,   0), (  0, 96), (  0, 192),
              ( 96,   0), ( 96, 96), ( 96, 192),
              (192,   0), (192, 96), (192, 192),]
@@ -38,7 +38,7 @@ def split(sample):
     region = tf.stack([sample['region']] * 9),
     source = tf.stack([sample['source']] * 9),
     date   = tf.stack([sample['date']] * 9),
-    box = tf.stack([tf.stack([y+dy, x+dx, y+dy+192, x+dx+192], axis=-1) for dy, dx in offsets]),
+    box = tf.stack([tf.stack([x+dx, y+dy, x+dx+192, y+dy+192], axis=-1) for dy, dx in offsets]),
     s2 = tf.stack([sample['s2'][..., dy:dy+192, dx:dx+192, :] for dy, dx in offsets]),
     mask = tf.stack([sample['mask'][..., dy:dy+192, dx:dx+192, :] for dy, dx in offsets]),
   )
@@ -58,8 +58,8 @@ def get_datasets(config_ds):
       ds = ds.shuffle(500)
     ds = ds.batch(bs)
     ds = ds.map(prepare, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.interleave(split)
     if key != 'val':
-      ds = ds.interleave(split)
       ds = ds.unbatch()
       ds = ds.shuffle(1024)
       ds = ds.batch(bs)
