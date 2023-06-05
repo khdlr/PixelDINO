@@ -30,11 +30,11 @@ datasets:
   val_Herschel:
     batch_size: 16
     shuffle: false
-    split: val_Gydan
-  val_Gydan:
+    split: val_Herschel
+  val_Chukotka:
     batch_size: 16
     shuffle: false
-    split: val_Gydan
+    split: val_Chukotka
   train:
     batch_size: 16
     shuffle: true
