@@ -271,6 +271,6 @@ if __name__ == '__main__':
         _, contour_jpg = mkstemp('.jpg')
         contour_img.save(contour_jpg)
 
-        wandb.log({f'contour/{name}': contour_jpg,
-                   f'imgs/{name}': stacked_jpg,
+        wandb.log({f'contour/{name}': wandb.Image(contour_jpg),
+                   f'imgs/{name}': wandb.Image(stacked_jpg),
         }, step=step)
