@@ -48,7 +48,10 @@ def train_step(data, state, key, do_augment=True):
 
   key_1a, key_1b, key_2, key_3 = jax.random.split(key, 4)
 
-  batch = distort(prep(data['train'], key_1a), key_1b)
+  if do_augment:
+    batch = distort(prep(data['train'], key_1a), key_1b)
+  else:
+    batch = prep(data['train'])
   img, mask = batch['s2'], batch['mask']
   
   if 'train_semi' in data:
