@@ -110,7 +110,24 @@ class Sentinel2(TileSource):
         scenes = []
 
         props = imgs.properties
-        print(f'Building timeseries from {len(props)} scenes...')
+        old_len = len(props)
+        if len(props) > 4:
+          sort = sorted(props, key=lambda k: props[k]['CLOUDLESS_PORTION'] +
+                         props[k]['FILL_PORTION'], reverse=True)
+
+          dates = set()
+          props = []
+          for p in sort:
+            date = p.split('/')[2][:8]
+            if date in dates:
+              continue
+            dates.add(date)
+            props.append(p)
+            if len(props) >= 4:
+              break
+
+        print(f'Found {old_len} scenes, proceeding with {len(props)} scenes...')
+
 
         for img in tqdm(props):
             s2_id = img.split('/')[-1]
@@ -172,6 +189,11 @@ class Sentinel2(TileSource):
         )
 
         metadata = metadata_all = imgs.properties
+
+        if len(metadata) > 4:
+          metadata = sorted(metadata, key=lambda k: metadata[k]['CLOUDLESS_PORTION'] + metadata[k]['FILL_PORTION'], reverse=True)[:4]
+
+        print(f'Found {len(metadata_all)} scenes, proceeding with {len(metadata)} scenes...')
 
         def build_scene(s2_id, _cache_path):
           Sentinel2.download_tile(_cache_path, img)
