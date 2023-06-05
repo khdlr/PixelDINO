@@ -144,7 +144,7 @@ if __name__ == '__main__':
 
   state = TrainingState(params=params, opt=opt_init(params))
 
-  wandb.init(project=f'semi', config=config, name=args.name, group=args.name.split('-')[0])
+  wandb.init(project=f'semi', config=config, name=args.name, group=args.config.stem)
 
   run_dir.mkdir(parents=True)
   config.run_id = wandb.run.id
