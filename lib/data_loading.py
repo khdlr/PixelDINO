@@ -6,17 +6,12 @@
 from tqdm import tqdm
 import tensorflow as tf
 import tensorflow_datasets as tfds
+from einops import rearrange
 
 
 @tf.function
 def prepare(sample):
-  s2 = tf.concat([
-    sample['156'][..., :1],
-    sample['rgb'][..., ::-1],
-    sample['156'][..., 1:],
-    sample['788a'],
-    sample['101112']
-  ], axis=-1)
+  s2 = rearrange(sample['img'], '... (col W) C -> ... W (col C)', col=4, C=3)
 
   out = dict(
     region=sample['region'],
@@ -58,7 +53,7 @@ def get_datasets(config_ds):
       ds = ds.shuffle(500)
     ds = ds.batch(bs)
     ds = ds.map(prepare, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.interleave(split)
+    # ds = ds.interleave(split)
     if key != 'val':
       ds = ds.unbatch()
       ds = ds.shuffle(1024)
@@ -67,14 +62,14 @@ def get_datasets(config_ds):
     datasets[key] = tfds.as_numpy(ds)
   return datasets
 
-if __name__ == '__main__':
-  config = dict(
-    batch_size=16,
-    threads=0,
-    shuffle=True,
-    path='/mnt/SSD1/konrad/data/RTS/webds/train-st-{000..002}.tar'
-  )
 
-  dataset = get_loader(config, cycle=True)
+if __name__ == '__main__':
+  config = {'train': {
+    'batch_size': 16,
+    'shuffle': True,
+    'split': 'train'
+  }}
+
+  dataset = get_datasets(config)['train']
   for i in tqdm(dataset):
     pass
