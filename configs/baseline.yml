@@ -27,11 +27,16 @@ validation:
 
 # Data args
 datasets:
-  val:
+  val_Herschel:
     batch_size: 16
     shuffle: false
-    split: val
+    split: val_Gydan
+  val_Gydan:
+    batch_size: 16
+    shuffle: false
+    split: val_Gydan
   train:
     batch_size: 16
     shuffle: true
+    augment: true
     split: train

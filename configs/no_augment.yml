@@ -38,5 +38,5 @@ datasets:
   train:
     batch_size: 16
     shuffle: true
-    augment: true
-    split: train_mt
+    augment: false
+    split: train

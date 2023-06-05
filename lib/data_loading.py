@@ -48,7 +48,7 @@ def get_datasets(config_ds):
     conf = config_ds[key]
     bs = conf['batch_size']
     ds = data[conf['split']]
-    if key != 'val':
+    if not key.startswith('val'):
       ds = ds.repeat()
       ds = ds.shuffle(500)
     ds = ds.batch(bs)
@@ -64,12 +64,12 @@ def get_datasets(config_ds):
 
 
 if __name__ == '__main__':
-  config = {'train': {
+  config = {'val_Herschel': {
     'batch_size': 16,
     'shuffle': True,
-    'split': 'train'
+    'split': 'val_Herschel'
   }}
 
-  dataset = get_datasets(config)['train']
+  dataset = get_datasets(config)['val_Herschel']
   for i in tqdm(dataset):
     pass
