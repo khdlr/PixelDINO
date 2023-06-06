@@ -54,18 +54,18 @@ def train_step(data, state, key, do_augment=True):
     batch = prep(data['train'])
   img, mask = batch['s2'], batch['mask']
   
-  if 'train_semi' in data:
-    batch = data['train_semi']
-    img_u   = prep(batch, key_2)['s2']
-    img_d   = distort({'s2': img_u}, key_3)['s2']
+  if 'train_unlabelled' in data:
+    batch = data['train_unlabelled']
+    img_u   = prep(batch, key_2)['img_1']
+    img_d   = distort({'img_2': img_u}, key_3)['img_2']
     img = jnp.concatenate([img, img_u, img_d], axis=0)
 
   def get_loss(params):
     terms = {}
     pred = model(params, img)
 
-    if 'train_semi' in data:
-      pred, pred_u, pred_d = jnp.split(preds, np.cumsum([x.shape[0] for x in [mask, img_u]]))
+    if 'train_unlabelled' in data:
+      pred, pred_u, pred_d = jnp.split(pred, np.cumsum([x.shape[0] for x in [mask, img_u]]))
 
       mask_d = distort({'mask': pred_u}, key_3)['mask']
       mask_d = jax.nn.sigmoid(mask_d)
@@ -74,10 +74,10 @@ def train_step(data, state, key, do_augment=True):
                                       -1))
       mask_d_counts = jnp.bincount(mask_d.reshape(-1) + 1, length=3) / np.prod(mask_d.shape)
       pred_d = model(params, img_d)
-      terms['loss_semi']  = get_loss_fn('train_semi')(mask_d, pred_d)
+      terms['loss_unlabelled']  = get_loss_fn('train_unlabelled')(mask_d, pred_d)
       terms['loss_super'] = get_loss_fn('train')(mask, pred)
-      terms['loss']       = terms['loss_super'] + config.train.semi_weight * terms['loss_semi']
-      terms['semi_premetrics'] = compute_premetrics(mask_d, pred_d)
+      terms['loss']       = terms['loss_super'] + config.train.unlabelled_weight * terms['loss_unlabelled']
+      terms['unlabelled_premetrics'] = compute_premetrics(mask_d, pred_d)
       terms['pseudolabels_undetermined'] = mask_d_counts[0]
       terms['pseudolabels_negative'] = mask_d_counts[1]
       terms['pseudolabels_positive'] = mask_d_counts[2]
@@ -158,7 +158,7 @@ if __name__ == '__main__':
   trn_metrics = defaultdict(list)
   for step in tqdm(range(1, 1+config.train.steps), ncols=80):
     data = jax.tree_map(next, generators)
-    data = {k: {'s2': v['s2'], 'mask': v['mask']} for k, v in data.items()}
+    data = {k: {kk: v for kk, v in data[k].items() if kk in {'s2', 'img_1', 'img_2', 'mask'}} for k in data}
 
     train_key, subkey = jax.random.split(train_key)
     terms, state = train_step(data, state, subkey, do_augment=config.datasets.train.augment)

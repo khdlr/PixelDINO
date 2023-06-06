@@ -44,6 +44,12 @@ def get_model(*dummy_in, seed=jax.random.PRNGKey(39)):
 
   return model, params
 
+all_types = {
+    's2': augmax.InputType.IMAGE,
+    'img_1': augmax.InputType.IMAGE,
+    'img_2': augmax.InputType.IMAGE,
+    'mask': augmax.InputType.MASK,
+}
 
 def prep(batch, augment_key=None):
   ops = []
@@ -57,10 +63,6 @@ def prep(batch, augment_key=None):
     augmax.ByteToFloat(),
   ]
 
-  all_types = {
-      's2': augmax.InputType.IMAGE,
-      'mask': augmax.InputType.MASK,
-  }
   batch = {k: batch[k] for k in batch if k in all_types}
 
   input_types = {k: all_types[k] for k in batch}
@@ -90,10 +92,6 @@ def distort(batch, augment_key):
         augmax.GaussianBlur(sigma=2)
     ]
 
-    all_types = {
-        's2': augmax.InputType.IMAGE,
-        'mask': augmax.InputType.MASK,
-    }
     input_types = {k: all_types[k] for k in batch}
     chain = augmax.Chain(*ops, input_types=input_types)
 

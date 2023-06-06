@@ -23,6 +23,23 @@ def prepare(sample):
   )
   return out
 
+
+@tf.function
+def prepare_unlabelled(sample):
+  img_1 = rearrange(sample['1_img'], '... (col W) C -> ... W (col C)', col=4, C=3)
+  img_2 = rearrange(sample['2_img'], '... (col W) C -> ... W (col C)', col=4, C=3)
+
+  out = dict(
+    region=sample['region'],
+    date_1=sample['1_date'],
+    date_2=sample['2_date'],
+    box=sample['box'],
+    img_1=img_1,
+    img_2=img_2,
+  )
+  return out
+
+
 @tf.function
 def split(sample):
   x, y = sample['box'][..., 0], sample['box'][..., 1]
@@ -42,17 +59,25 @@ def split(sample):
 
 def get_datasets(config_ds):
   data = tfds.load('rts', shuffle_files=True)
+  if any(config_ds[c]['split'].startswith('unlabelled') for c in config_ds):
+    data.update(tfds.load('rts_unlabelled', shuffle_files=True))
 
   datasets = {}
   for key in config_ds:
+    split = config_ds[key]['split']
     conf = config_ds[key]
+
     bs = conf['batch_size']
-    ds = data[conf['split']]
+    ds = data[split]
     if not key.startswith('val'):
       ds = ds.repeat()
       ds = ds.shuffle(500)
     ds = ds.batch(bs)
-    ds = ds.map(prepare, num_parallel_calls=tf.data.AUTOTUNE)
+
+    if split.startswith('unlabelled'):
+      ds = ds.map(prepare_unlabelled, num_parallel_calls=tf.data.AUTOTUNE)
+    else:
+      ds = ds.map(prepare, num_parallel_calls=tf.data.AUTOTUNE)
     # ds = ds.interleave(split)
     if key != 'val':
       ds = ds.unbatch()
@@ -64,12 +89,12 @@ def get_datasets(config_ds):
 
 
 if __name__ == '__main__':
-  config = {'val_Herschel': {
+  config = {'unlabelled': {
     'batch_size': 16,
     'shuffle': True,
-    'split': 'val_Herschel'
+    'split': 'unlabelled'
   }}
 
-  dataset = get_datasets(config)['val_Herschel']
+  dataset = get_datasets(config)['unlabelled']
   for i in tqdm(dataset):
     pass
