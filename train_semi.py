@@ -42,8 +42,8 @@ def get_loss_fn(mode):
   return getattr(losses, name)
 
 
-@partial(jax.jit, static_argnums=3)
-def train_step(data, state, key, do_augment=True):
+@partial(jax.pmap, axis_name='device', static_broadcasted_argnums=3)
+def train_step(data, state, key, do_augment):
   _, optimizer = get_optimizer()
 
   key_1a, key_1b, key_2, key_3 = jax.random.split(key, 4)
@@ -54,38 +54,33 @@ def train_step(data, state, key, do_augment=True):
     batch = prep(data['train'])
   img, mask = batch['s2'], batch['mask']
 
-  if 'train_unlabelled' in data:
-    batch = data['train_unlabelled']
-    img_u = prep(batch, key_2)['img_1']
-    mask_u  = jax.nn.sigmoid(model(params, img_u))
-    batch_d = distort({'img_2': img_u, 'mask': mask_u}, key_3)
-    img_d   = batch_d['img_2']
-    mask_d  = batch_d['mask']
-    mask_d = jnp.where( mask_d > 0.8,  1,
-             jnp.where( mask_d < 0.2,  0, 255)).astype(np.uint8)
-    mask_d_counts = jnp.bincount(mask_d.reshape(-1) + 1, length=3) / np.prod(mask_d.shape)
+  batch   = data['train_unlabelled']
+  img_u   = prep(batch, key_2)['img_1']
+  mask_u  = jax.nn.sigmoid(model(params, img_u))
+  batch_d = distort({'img_2': img_u, 'mask': mask_u}, key_3)
+  img_d   = batch_d['img_2']
+  mask_d  = batch_d['mask']
+  mask_d = jnp.where( mask_d > 0.8,  1,
+           jnp.where( mask_d < 0.2,  0, 255)).astype(np.uint8)
+  mask_d_counts = jnp.bincount(mask_d.reshape(-1) + 1, length=3) / np.prod(mask_d.shape)
 
   def get_loss(params):
     terms = {}
     pred = model(params, img)
-
-    if 'train_unlabelled' in data:
-      pred_d = model(params, img_d)
-      terms['loss_unlabelled'] = get_loss_fn('train_unlabelled')(mask_d, pred_d)
-      terms['loss_super'] = get_loss_fn('train')(mask, pred)
-      terms['loss']       = terms['loss_super'] + config.train.unlabelled_weight * terms['loss_unlabelled']
-      terms['unlabelled_premetrics'] = compute_premetrics(mask_d, pred_d)
-      terms['pseudolabels_undetermined'] = mask_d_counts[0]
-      terms['pseudolabels_negative'] = mask_d_counts[1]
-      terms['pseudolabels_positive'] = mask_d_counts[2]
-    else:
-      terms['loss'] = terms['loss_super'] = get_loss_fn('train')(mask, pred)
-
+    pred_d = model(params, img_d)
+    terms['loss_unlabelled']  = get_loss_fn('train_unlabelled')(mask_d, pred_d)
+    terms['loss_super'] = get_loss_fn('train')(mask, pred)
+    terms['loss']       = terms['loss_super'] + config.train.unlabelled_weight * terms['loss_unlabelled']
+    terms['unlabelled_premetrics'] = compute_premetrics(mask_d, pred_d)
+    terms['pseudolabels_undetermined'] = mask_d_counts[0]
+    terms['pseudolabels_negative'] = mask_d_counts[1]
+    terms['pseudolabels_positive'] = mask_d_counts[2]
     terms['super_premetrics'] = compute_premetrics(mask, pred)
 
     return terms['loss'], terms
 
   gradients, terms = jax.grad(get_loss, has_aux=True)(state.params)
+  gradients = jax.lax.pmean(gradients, 'device')
   updates, new_opt = optimizer(gradients, state.opt, state.params)
   new_params = optax.apply_updates(state.params, updates)
 
@@ -142,7 +137,10 @@ if __name__ == '__main__':
   opt_init, _ = get_optimizer()
   model = S.apply
 
+  num_devices = jax.local_device_count()
+  print(f'Replicating across {num_devices} devices')
   state = TrainingState(params=params, opt=opt_init(params))
+  state = jax.tree_map(lambda x: np.stack([x] * num_devices), state)
 
   wandb.init(project=f'semi', config=config, name=args.name, group=args.config.stem)
 
@@ -156,9 +154,12 @@ if __name__ == '__main__':
   for step in tqdm(range(1, 1+config.train.steps), ncols=80):
     data = jax.tree_map(next, generators)
     data = {k: {kk: v for kk, v in data[k].items() if kk in {'s2', 'img_1', 'img_2', 'mask'}} for k in data}
-
+    data = jax.tree_map(
+        lambda x: rearrange(x,'(D C) ... -> D C ...', D=num_devices), data)
     train_key, subkey = jax.random.split(train_key)
-    terms, state = train_step(data, state, subkey, do_augment=config.datasets.train.augment)
+    subkey = jax.random.split(subkey, num_devices)
+
+    terms, state = train_step(data, state, subkey, config.datasets.train.augment)
 
     for k in terms:
         trn_metrics[k].append(terms[k])
