@@ -39,7 +39,7 @@ def load_state(checkpoint_path):
 
 def get_model(*dummy_in, seed=jax.random.PRNGKey(39)):
   model_cls = getattr(models, config.model.type)
-  model = hk.without_apply_rng(hk.transform(lambda x: model_cls()(x)))
+  model = hk.without_apply_rng(hk.transform(lambda x, **kwargs: model_cls()(x, **kwargs)))
   params = jax.jit(model.init)(seed, *jax.tree_map(lambda x: x[:1], dummy_in))
 
   return model, params
@@ -49,6 +49,7 @@ all_types = {
     'img_1': augmax.InputType.IMAGE,
     'img_2': augmax.InputType.IMAGE,
     'mask': augmax.InputType.MASK,
+    'features': augmax.InputType.DENSE,
 }
 
 def prep(batch, augment_key=None):

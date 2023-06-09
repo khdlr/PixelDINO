@@ -8,7 +8,7 @@ class UNet:
   def __init__(self):
     self.width = config.model.width
 
-  def __call__(self, x):
+  def __call__(self, x, return_features=False):
     skip_connections = []
 
     W = self.width
@@ -30,8 +30,13 @@ class UNet:
       x = jax.nn.relu(x)
       x = Convx2(jnp.concatenate([x, skip], axis=-1), channels)
 
+    features = x
     x = hk.Conv2D(1, 1)(x)
-    return x
+
+    if return_features:
+      return x, features
+    else:
+      return x
 
 
 def Norm():
