@@ -70,6 +70,7 @@ def train_step(data, state, key, do_augment=True):
     center = feat_1.mean(axis=[1, 2], keepdims=True)
     feat_1 = (feat_1 - center) / config.train.temperature
     feat_1 = jax.lax.stop_gradient(feat_1)
+    feat_1 = jax.nn.softmax(feat_1, axis=-1)
 
     terms['loss_unlabelled'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
     terms['loss'] = terms['loss_super'] + \

@@ -20,8 +20,8 @@ loss_functions:
 
 train:
   steps: 200_000
-  temperature: 0.5
-  unlabelled_weight: 1.0
+  temperature: 0.1
+  unlabelled_weight: 0.1
 
 validation:
   frequency: 1_000
