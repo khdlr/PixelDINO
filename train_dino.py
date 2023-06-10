@@ -12,7 +12,7 @@ from tempfile import mkstemp
 from lib.lion import lion
 from collections import defaultdict
 from PIL import Image
-from scipy.signal.windows import blackmanharris
+import matplotlib as mpl
 from einops import rearrange
 
 import wandb
@@ -60,17 +60,17 @@ def train_step(data, state, key, do_augment=True):
   def get_loss(params):
     terms = {}
     preds, features = jax.vmap(lambda x: model(params, x, return_features=True))(imgs)
-    pred, pred_1, pred_2 = preds
-    feat, feat_1, feat_2 = features
+    pred, _, _ = preds
+    _, feat_1, feat_2 = features
 
     terms['loss_super'] = get_loss_fn('train')(mask, pred)
 
     # Dino-Style loss: feat_1 == "teacher", feat_2 == "student"
-    feat_1 = distort({'features': feat_1}, key_4)['features']
     center = feat_1.mean(axis=[1, 2], keepdims=True)
     feat_1 = (feat_1 - center) / config.train.temperature
-    feat_1 = jax.lax.stop_gradient(feat_1)
     feat_1 = jax.nn.softmax(feat_1, axis=-1)
+    feat_1 = distort({'features': feat_1}, key_4)['features']
+    feat_1 = jax.lax.stop_gradient(feat_1)
 
     terms['loss_unlabelled'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
     terms['loss'] = terms['loss_super'] + \
