@@ -95,7 +95,7 @@ def test_step(batch, state):
     img = batch['s2']
     mask = batch['mask']
 
-    pred = model(state.params, img)
+    pred, features = model(state.params, img, return_features=True)
     loss = get_loss_fn('train')(mask, pred)
 
     terms = {
@@ -103,8 +103,7 @@ def test_step(batch, state):
         'val_premetrics': compute_premetrics(mask, pred),
     }
 
-    # Convert from normalized to to pixel coordinates
-    return terms, jax.nn.sigmoid(pred)
+    return terms, jax.nn.sigmoid(pred), features.argmax(axis=-1)
 
 
 if __name__ == '__main__':
@@ -177,7 +176,7 @@ if __name__ == '__main__':
       for step_test, data in enumerate(dataset):
           val_key, subkey = jax.random.split(val_key, 2)
           data_inp = {'s2': data['s2'], 'mask': data['mask']}
-          metrics, preds = test_step(data_inp, state)
+          metrics, preds, pseudo_classes = test_step(data_inp, state)
 
           for m in metrics:
             val_metrics[m].append(metrics[m])
@@ -186,6 +185,7 @@ if __name__ == '__main__':
             key = data['source'][i].decode('utf8')
             val_outputs[key].append({
               'pred': preds[i],
+              'pseudo_classes': pseudo_classes[i],
               **jax.tree_map(lambda x: x[i], data),
             })
 
@@ -203,6 +203,7 @@ if __name__ == '__main__':
         rgb    = np.zeros([y_max, x_max, 3], dtype=np.float64)
         mask   = np.zeros([y_max, x_max, 1], dtype=np.float64)
         pred   = np.zeros([y_max, x_max, 1], dtype=np.float64)
+        pseudo_classes = np.zeros([y_max, x_max], dtype=int)
         window = np.concatenate([
           np.linspace(0, 1, 96),
           np.linspace(0, 1, 96)[::-1],
@@ -225,17 +226,14 @@ if __name__ == '__main__':
           rgb[y0:y1, x0:x1]    += stencil * patch_rgb
           mask[y0:y1, x0:x1]   += stencil * patch_mask
           pred[y0:y1, x0:x1]   += stencil * patch_pred
+          pseudo_classes[y0:y1, x0:x1] = patch['pseudo_classes']
 
         weight = np.where(weight == 0, 1, weight)
         rgb  = np.clip(rgb / weight, 0, 255).astype(np.uint8)
         mask = np.clip(mask / weight, 0, 255).astype(np.uint8)
         pred = np.clip(pred / weight, 0, 255).astype(np.uint8)
 
-        stacked = np.concatenate([
-          rgb,
-          np.concatenate([mask, pred, np.zeros_like(mask)], axis=-1),
-        ], axis=1)
-
+        stacked = np.concatenate([mask, pred, np.zeros_like(mask)], axis=-1)
         stacked = Image.fromarray(stacked)
         _, stacked_jpg = mkstemp('.jpg')
         stacked.save(stacked_jpg)
@@ -265,6 +263,12 @@ if __name__ == '__main__':
         _, contour_jpg = mkstemp('.jpg')
         contour_img.save(contour_jpg)
 
+        n_classes = config.model.width
+        cmap = mpl.colormaps['hsv'].resampled(n_classes)
+        colors = np.stack([np.asarray(cmap(i))[:3] for i in range(n_classes)])
+        pc_rgb = colors[pseudo_classes]
+
         wandb.log({f'contour/{name}': wandb.Image(contour_jpg),
                    f'imgs/{name}': wandb.Image(stacked_jpg),
+                   f'pseudo_class/{name}': wandb.Image(pc_rgb),
         }, step=step)
