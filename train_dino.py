@@ -66,7 +66,7 @@ def train_step(data, state, key, do_augment=True):
     terms['loss_super'] = get_loss_fn('train')(mask, pred)
 
     # Dino-Style loss: feat_1 == "teacher", feat_2 == "student"
-    center = feat_1.mean(axis=[1, 2], keepdims=True)
+    center = feat_1.mean(axis=[0, 1, 2], keepdims=True)
     feat_1 = (feat_1 - center) / config.train.temperature
     feat_1 = jax.nn.softmax(feat_1, axis=-1)
     feat_1 = distort({'features': feat_1}, key_4)['features']
