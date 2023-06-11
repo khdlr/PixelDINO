@@ -83,6 +83,37 @@ def prep(batch, augment_key=None):
   return outputs
 
 
+def augment(batch, augment_key):
+  ops = [
+    augmax.HorizontalFlip(),
+    augmax.VerticalFlip(),
+    augmax.Rotate90(),
+    augmax.Rotate(),
+    augmax.Warp(coarseness=16, strength=2),
+    augmax.ByteToFloat(),
+    augmax.RandomGamma(p=1., range=[0.75, 1.33]),
+    augmax.RandomBrightness(p=1.),
+    augmax.RandomContrast(p=1.),
+    augmax.GaussianBlur(sigma=2)
+  ]
+
+  batch = {k: batch[k] for k in batch if k in all_types}
+
+  input_types = {k: all_types[k] for k in batch}
+  chain = augmax.Chain(*ops, input_types=input_types)
+
+  batch_size = jax.tree_util.tree_leaves(batch)[0].shape[0]
+  subkeys = jax.random.split(augment_key, batch_size)
+  transformation = jax.vmap(chain)
+  outputs = transformation(subkeys, batch)
+  if 'mask' in outputs:
+    mask = outputs['mask']
+    mask = jnp.where(mask == 255, 1, jnp.where(mask == 127, 255, 0))
+    outputs['mask'] = mask
+
+  return outputs
+
+
 def distort(batch, augment_key):
     ops = [
         augmax.HorizontalFlip(),

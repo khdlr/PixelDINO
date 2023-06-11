@@ -12,7 +12,6 @@ from tempfile import mkstemp
 from lib.lion import lion
 from collections import defaultdict
 from PIL import Image
-from scipy.signal.windows import blackmanharris
 from einops import rearrange
 
 import wandb
@@ -23,7 +22,7 @@ from lib.data_loading import get_datasets
 from lib import utils, logging, losses
 from lib.config_mod import config
 from lib.metrics import compute_premetrics
-from lib.utils import TrainingState, prep, distort, changed_state, save_state
+from lib.utils import TrainingState, prep, augment, changed_state, save_state
 
 jax.config.update("jax_numpy_rank_promotion", "raise")
 
@@ -46,10 +45,10 @@ def get_loss_fn(mode):
 def train_step(data, state, key, do_augment=True):
   _, optimizer = get_optimizer()
 
-  key_1a, key_1b, key_2, key_3 = jax.random.split(key, 4)
+  key_1, key_2, key_3 = jax.random.split(key, 3)
 
   if do_augment:
-    batch = distort(prep(data['train'], key_1a), key_1b)
+    batch = augment(data['train'], key_1)
   else:
     batch = prep(data['train'])
   img, mask = batch['s2'], batch['mask']
@@ -144,7 +143,7 @@ if __name__ == '__main__':
 
   state = TrainingState(params=params, opt=opt_init(params))
 
-  wandb.init(project=f'semi', config=config, name=args.name, group=args.config.stem)
+  wandb.init(project=f'Thaw Slumps', config=config, name=args.name, group=args.config.stem)
 
   run_dir.mkdir(parents=True)
   config.run_id = wandb.run.id
