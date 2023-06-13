@@ -33,17 +33,12 @@ datasets:
     batch_size: 16
     shuffle: false
     split: val_Herschel
-  val_Taimyr:
+  val_Chukotka:
     batch_size: 16
     shuffle: false
-    split: val_Taimyr
+    split: val_Chukotka
   train:
     batch_size: 16
     shuffle: true
     augment: true
     split: train
-  train_unlabelled:
-    batch_size: 16
-    shuffle: true
-    augment: true
-    split: unlabelled

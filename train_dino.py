@@ -19,7 +19,7 @@ import wandb
 from tqdm import tqdm
 
 from munch import munchify
-from lib.data_loading import get_datasets
+from lib.data_loading import get_datasets, get_unlabelled
 from lib import utils, logging, losses
 from lib.config_mod import config
 from lib.metrics import compute_premetrics
@@ -42,19 +42,18 @@ def get_loss_fn(mode):
   return getattr(losses, name)
 
 
-@partial(jax.jit, static_argnums=3)
-def train_step(data, state, key, do_augment=True):
+@partial(jax.jit, static_argnums=4)
+def train_step(data, unlabelled, state, key, do_augment=True):
   _, optimizer = get_optimizer()
 
   key_1a, key_1b, key_2, key_3, key_4 = jax.random.split(key, 5)
 
-  batch = distort(prep(data['train'], key_1a), key_1b)
+  batch = distort(prep(data, key_1a), key_1b)
   img, mask = batch['s2'], batch['mask']
 
-  batch = data['train_unlabelled']
-  batch = prep(batch, key_2)
-  img_1, img_2 = batch['img_1'], batch['img_2']
-  img_2 = distort({'img_2': img_2}, key_3)['img_2']
+  batch = prep(unlabelled, key_2)
+  img_1 = img_2 = batch['img']
+  img_2 = distort({'img': img_2}, key_3)['img']
   imgs = jnp.stack([img, img_1, img_2], axis=0)
 
   def get_loss(params):
@@ -127,7 +126,8 @@ if __name__ == '__main__':
 
   datasets = get_datasets(config['datasets'])
   val_data = {k: datasets[k] for k in datasets if k.startswith('val')}
-  trn_data = {k: datasets[k] for k in datasets if not k.startswith('val')}
+  trn_data = datasets['train']
+  unlabelled_data = get_unlabelled(config['datasets']['train']['batch_size'])
 
   S, params = utils.get_model(np.ones([1, 128, 128, 12]))
 
@@ -144,14 +144,17 @@ if __name__ == '__main__':
   with open(run_dir / 'config.yml', 'w') as f:
       f.write(yaml.dump(config, default_flow_style=False))
 
-  generators = jax.tree_map(iter, trn_data)
+  trn_gen = jax.tree_map(iter, trn_data)
+  unlabelled_gen = iter(unlabelled_data)
   trn_metrics = defaultdict(list)
   for step in tqdm(range(1, 1+config.train.steps), ncols=80):
-    data = jax.tree_map(next, generators)
-    data = {k: {kk: v for kk, v in data[k].items() if kk in {'s2', 'img_1', 'img_2', 'mask'}} for k in data}
+    data = next(trn_gen)
+    data = {'s2': data['s2'], 'mask': data['mask']}
+    unlabelled = next(unlabelled_gen)
+    unlabelled = {'img': unlabelled['img']}
 
     train_key, subkey = jax.random.split(train_key)
-    terms, state = train_step(data, state, subkey, do_augment=config.datasets.train.augment)
+    terms, state = train_step(data, unlabelled, state, subkey, do_augment=config.datasets.train.augment)
 
     for k in terms:
         trn_metrics[k].append(terms[k])

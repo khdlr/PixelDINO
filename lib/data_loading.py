@@ -26,16 +26,11 @@ def prepare(sample):
 
 @tf.function
 def prepare_unlabelled(sample):
-  img_1 = rearrange(sample['1_img'], '... (col W) C -> ... W (col C)', col=4, C=3)
-  img_2 = rearrange(sample['2_img'], '... (col W) C -> ... W (col C)', col=4, C=3)
+  img = rearrange(sample['img'], '... (col W) C -> ... W (col C)', col=4, C=3)
 
   out = dict(
-    region=sample['region'],
-    date_1=sample['1_date'],
-    date_2=sample['2_date'],
     box=sample['box'],
-    img_1=img_1,
-    img_2=img_2,
+    img=img,
   )
   return out
 
@@ -74,10 +69,7 @@ def get_datasets(config_ds):
       ds = ds.shuffle(500)
     ds = ds.batch(bs)
 
-    if split.startswith('unlabelled'):
-      ds = ds.map(prepare_unlabelled, num_parallel_calls=tf.data.AUTOTUNE)
-    else:
-      ds = ds.map(prepare, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.map(prepare, num_parallel_calls=tf.data.AUTOTUNE)
     # ds = ds.interleave(split)
     if key != 'val':
       ds = ds.unbatch()
@@ -86,6 +78,21 @@ def get_datasets(config_ds):
     ds = ds.prefetch(tf.data.AUTOTUNE)
     datasets[key] = tfds.as_numpy(ds)
   return datasets
+
+
+def get_unlabelled(batch_size):
+  ds = tfds.load('permafrost', shuffle_files=True)['train']
+  ds = ds.repeat()
+  ds = ds.shuffle(500)
+  ds = ds.batch(batch_size)
+  ds = ds.map(prepare_unlabelled, num_parallel_calls=tf.data.AUTOTUNE)
+
+  ds = ds.unbatch()
+  ds = ds.shuffle(1024)
+  ds = ds.batch(batch_size)
+  ds = ds.prefetch(tf.data.AUTOTUNE)
+  ds = tfds.as_numpy(ds)
+  return ds
 
 
 if __name__ == '__main__':
