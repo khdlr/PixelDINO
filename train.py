@@ -48,7 +48,7 @@ def train_step(data, state, key, do_augment=True):
   key_1, key_2, key_3 = jax.random.split(key, 3)
 
   if do_augment:
-    batch = augment(data['train'], key_1)
+    batch = augment(data['train'], key_1
   else:
     batch = prep(data['train'])
   img, mask = batch['s2'], batch['mask']

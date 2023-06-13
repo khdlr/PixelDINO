@@ -23,7 +23,7 @@ from lib.data_loading import get_datasets, get_unlabelled
 from lib import utils, logging, losses
 from lib.config_mod import config
 from lib.metrics import compute_premetrics
-from lib.utils import TrainingState, prep, distort, changed_state, save_state
+from lib.utils import DINOState, prep, distort, changed_state, save_state
 
 jax.config.update("jax_numpy_rank_promotion", "raise")
 
@@ -54,36 +54,44 @@ def train_step(data, unlabelled, state, key, do_augment=True):
   batch = prep(unlabelled, key_2)
   img_1 = img_2 = batch['img']
   img_2 = distort({'img': img_2}, key_3)['img']
-  imgs = jnp.stack([img, img_1, img_2], axis=0)
+  _, feat_1 = model(state.teacher, img_1, return_features=True)
+
+  center = feat_1.mean(axis=[0, 1, 2], keepdims=True)
+  feat_1 = (feat_1 - state.center) / config.train.temperature
+  feat_1 = jax.nn.softmax(feat_1, axis=-1)
+  feat_1 = distort({'features': feat_1}, key_4)['features']
 
   def get_loss(params):
     terms = {}
-    preds, features = jax.vmap(lambda x: model(params, x, return_features=True))(imgs)
-    pred, _, _ = preds
-    _, feat_1, feat_2 = features
+    pred = model(params, img, return_features=False)
+    _, feat_2 = model(params, img_2, return_features=True)
 
     terms['loss_super'] = get_loss_fn('train')(mask, pred)
 
     # Dino-Style loss: feat_1 == "teacher", feat_2 == "student"
-    center = feat_1.mean(axis=[1, 2], keepdims=True)
-    feat_1 = (feat_1 - center) / config.train.temperature
-    feat_1 = jax.nn.softmax(feat_1, axis=-1)
-    feat_1 = distort({'features': feat_1}, key_4)['features']
-    feat_1 = jax.lax.stop_gradient(feat_1)
-
     terms['loss_unlabelled'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
     terms['loss'] = terms['loss_super'] + \
         config.train.unlabelled_weight * terms['loss_unlabelled']
     terms['super_premetrics'] = compute_premetrics(mask, pred)
 
-    return terms['loss'], terms
+    return terms['loss'], (terms, center)
 
-  gradients, terms = jax.grad(get_loss, has_aux=True)(state.params)
+  gradients, (terms, new_center) = jax.grad(get_loss, has_aux=True)(state.params)
   updates, new_opt = optimizer(gradients, state.opt, state.params)
   new_params = optax.apply_updates(state.params, updates)
 
+  # EMA steps
+  progress = new_opt[0].count / config.train.steps
+  ema = config.train.teacher_ema
+  ema_sched = 0.5 - 0.5 * jnp.cos(jnp.pi * progress)
+  ema =  (1 - ema_sched) * ema + ema_sched # * 1  # Increases to 1 with cosine schedule
+  teacher = jax.tree_map(lambda old, new: ema * old + (1 - ema) * new, state.teacher, new_params)
+  c = config.train.center_ema
+  center = c * state.center + (1 - c) * new_center
   return terms, changed_state(state,
       params=new_params,
+      teacher=teacher,
+      center=center,
       opt=new_opt,
   )
 
@@ -111,15 +119,18 @@ if __name__ == '__main__':
   parser.add_argument('-s', '--seed', type=int, required=True)
   parser.add_argument('-n', '--name', type=str, required=True)
   parser.add_argument('-f', '--skip-git-check', action='store_true')
+  parser.add_argument('-w', '--unlabelled_weight', type=float)
+  parser.add_argument('-t', '--dino_temperature', type=float)
   args = parser.parse_args()
-
-  run_dir = Path(f'runs/{args.name}/')
-  assert not run_dir.exists(), f"Previous run exists at {run_dir}"
 
   train_key = jax.random.PRNGKey(args.seed)
   persistent_val_key = jax.random.PRNGKey(27)
 
   config.update(munchify(yaml.safe_load(args.config.open())))
+  if args.dino_temperature is not None:
+    config.train.temperature = args.dino_temperature
+  if args.unlabelled_weight is not None:
+    config.train.unlabelled_weight = args.unlabelled_weight
 
   # initialize data loading
   train_key, subkey = jax.random.split(train_key)
@@ -135,9 +146,14 @@ if __name__ == '__main__':
   opt_init, _ = get_optimizer()
   model = S.apply
 
-  state = TrainingState(params=params, opt=opt_init(params))
+  center = jnp.zeros([1, 1, 1, config.train.n_pseudoclasses])
+  state = DINOState(params=params, teacher=params, opt=opt_init(params), center=center)
 
   wandb.init(project=f'rts_semi', config=config, name=args.name, group=args.config.stem)
+
+  run_dir = Path(f'runs/{wandb.run.id}/')
+  assert not run_dir.exists(), f"Previous run exists at {run_dir}"
+
 
   run_dir.mkdir(parents=True)
   config.run_id = wandb.run.id
@@ -167,9 +183,6 @@ if __name__ == '__main__':
 
     logging.log_metrics(trn_metrics, 'trn', step, do_print=False)
     trn_metrics = defaultdict(list)
-    # Save Checkpoint
-    save_state(state, run_dir / f'step_{step:07d}.pkl')
-    save_state(state, run_dir / f'latest.pkl')
 
     for tag, dataset in val_data.items():
       # Validate
@@ -197,6 +210,10 @@ if __name__ == '__main__':
       if step % config.validation.image_frequency != 0:
         continue
 
+      # Save Checkpoint
+      save_state(state, run_dir / f'step_{step:07d}.pkl')
+      save_state(state, run_dir / f'latest.pkl')
+
       for tile, data in val_outputs.items():
         name = Path(tile).stem
         y_max = max(d['box'][3] for d in data)
@@ -207,8 +224,7 @@ if __name__ == '__main__':
         mask   = np.zeros([y_max, x_max, 1], dtype=np.float64)
         pred   = np.zeros([y_max, x_max, 1], dtype=np.float64)
 
-        n_classes = data[0]['pseudo_classes'].shape[-1]
-        pseudo_classes = np.zeros([y_max, x_max, n_classes])
+        pseudo_classes = np.zeros([y_max, x_max, config.train.n_pseudoclasses])
         window = np.concatenate([
           np.linspace(0, 1, 96),
           np.linspace(0, 1, 96)[::-1],
@@ -269,8 +285,8 @@ if __name__ == '__main__':
         _, contour_jpg = mkstemp('.jpg')
         contour_img.save(contour_jpg)
 
-        cmap = mpl.colormaps['hsv'].resampled(n_classes)
-        colors = np.stack([np.asarray(cmap(i))[:3] for i in range(n_classes)])
+        cmap = mpl.colormaps['hsv'].resampled(config.train.n_pseudoclasses)
+        colors = np.stack([np.asarray(cmap(i))[:3] for i in range(config.train.n_pseudoclasses)])
         pc_rgb = colors[pseudo_classes]
 
         wandb.log({f'contour/{name}': wandb.Image(contour_jpg),

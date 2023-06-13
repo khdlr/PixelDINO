@@ -18,11 +18,27 @@ class TrainingState(NamedTuple):
     opt: optax.OptState
 
 
-def changed_state(state, params=None, opt=None):
+class DINOState(NamedTuple):
+    params: hk.Params
+    teacher: hk.Params
+    center: jax.Array
+    opt: optax.OptState
+
+
+def changed_state(state, params=None, opt=None, teacher=None, center=None):
+  if isinstance(state, TrainingState):
     return TrainingState(
         params=state.params if params is None else params,
         opt=state.opt if opt is None else opt,
     )
+  elif isinstance(state, DINOState):
+    return DINOState(
+        params=state.params if params is None else params,
+        teacher=state.teacher if teacher is None else teacher,
+        center=state.center if center is None else center,
+        opt=state.opt if opt is None else opt,
+    )
+
 
 
 def save_state(state, out_path):

@@ -22,7 +22,9 @@ train:
   steps: 200_000
   temperature: 0.5
   unlabelled_weight: 0.1
-  teacher_ema: 0.9995
+  teacher_ema: 0.996
+  center_ema: 0.996
+  n_pseudoclasses: 24
 
 validation:
   frequency: 1_000

@@ -20,6 +20,7 @@ class UNet:
 
     x = Convx2(x, 16*W)
 
+    feature_maps = []
     for channels, skip in zip(reversed(channel_seq), reversed(skip_connections)):
       B,  H,  W,  C  = x.shape
       B_, H_, W_, C_ = skip.shape
@@ -29,9 +30,12 @@ class UNet:
       x = Norm()(x)
       x = jax.nn.relu(x)
       x = Convx2(jnp.concatenate([x, skip], axis=-1), channels)
+      feature_maps.append(x)
 
-    features = x
+    features = hk.Conv2D(config.train.n_pseudoclasses, 1)(feature_maps[-2])
     x = hk.Conv2D(1, 1)(x)
+    B, H, W, C = x.shape
+    features = jax.image.resize(features, [B, H, W, features.shape[-1]], method='bilinear')
 
     if return_features:
       return x, features
