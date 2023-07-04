@@ -1,18 +1,17 @@
 # Model Specification
 model:
   type: UNet
-  width: 32
+  width: 16
 
 optimizer:
-  type: adamw
-  args:
-    weight_decay: 1.e-3
+  type: adam
+  args: {}
   schedule: warmup_cosine_decay_schedule
   schedule_args:
-    init_value: 1.e-7
+    init_value: 1.e-3
     peak_value: 1.e-3
     warmup_steps: 10_000
-    end_value:  4.e-5
+    end_value:  1.e-3
     decay_steps: 240_000
 
 loss_functions:
@@ -21,7 +20,11 @@ loss_functions:
 train:
   steps: 200_000
   temperature: 0.1
-  unlabelled_weight: 1.0
+  unlabelled_weight: 0.1
+  unlabelled_bs: 16
+  teacher_ema: 0.996
+  center_ema: 0.996
+  n_pseudoclasses: 24
 
 validation:
   frequency: 1_000
@@ -42,8 +45,3 @@ datasets:
     shuffle: true
     augment: true
     split: train
-  train_unlabelled:
-    batch_size: 16
-    shuffle: true
-    augment: true
-    split: unlabelled

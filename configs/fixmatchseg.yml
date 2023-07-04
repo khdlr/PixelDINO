@@ -17,15 +17,15 @@ optimizer:
 
 loss_functions:
   train: bce
+  train_unlabelled: bce
 
 train:
   steps: 200_000
-  temperature: 0.5
-  unlabelled_weight: 1.0
+  unlabelled_weight: 0.1
 
 validation:
   frequency: 1_000
-  image_frequency: 10_000
+  image_frequency: 100_000
 
 # Data args
 datasets:
@@ -33,17 +33,12 @@ datasets:
     batch_size: 16
     shuffle: false
     split: val_Herschel
-  val_Chukotka:
+  val_Lena:
     batch_size: 16
     shuffle: false
-    split: val_Chukotka
+    split: val_Lena
   train:
     batch_size: 16
     shuffle: true
-    augment: true
+    augment: false
     split: train
-  train_unlabelled:
-    batch_size: 16
-    shuffle: true
-    augment: true
-    split: unlabelled

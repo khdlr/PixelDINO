@@ -21,11 +21,15 @@ loss_functions:
 train:
   steps: 200_000
   temperature: 0.5
-  unlabelled_weight: 1.0
+  unlabelled_weight: 0.1
+  unlabelled_bs: 16
+  teacher_ema: 0.996
+  center_ema: 0.996
+  n_pseudoclasses: 24
 
 validation:
   frequency: 1_000
-  image_frequency: 10_000
+  image_frequency: 50_000
 
 # Data args
 datasets:
@@ -42,8 +46,3 @@ datasets:
     shuffle: true
     augment: true
     split: train
-  train_unlabelled:
-    batch_size: 16
-    shuffle: true
-    augment: true
-    split: unlabelled

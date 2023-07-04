@@ -32,12 +32,15 @@ class UNet:
       x = Convx2(jnp.concatenate([x, skip], axis=-1), channels)
       feature_maps.append(x)
 
-    features = hk.Conv2D(config.train.n_pseudoclasses, 1)(feature_maps[-2])
+    try:
+      features = hk.Conv2D(config.train.n_pseudoclasses, 1)(feature_maps[-2])
+    except:
+      pass
     x = hk.Conv2D(1, 1)(x)
-    B, H, W, C = x.shape
-    features = jax.image.resize(features, [B, H, W, features.shape[-1]], method='bilinear')
 
     if return_features:
+      B, H, W, C = x.shape
+      features = jax.image.resize(features, [B, H, W, features.shape[-1]], method='bilinear')
       return x, features
     else:
       return x

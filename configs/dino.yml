@@ -12,21 +12,25 @@ optimizer:
     init_value: 1.e-7
     peak_value: 1.e-3
     warmup_steps: 10_000
-    end_value:  4.e-5
+    end_value:  2.e-4
     decay_steps: 240_000
 
 loss_functions:
   train: bce
 
 train:
+  group: dino_.996->1
   steps: 200_000
   temperature: 0.5
   unlabelled_weight: 0.1
-  teacher_ema: 0.9995
+  unlabelled_bs: 16
+  teacher_ema: 0.996
+  center_ema: 0.996
+  n_pseudoclasses: 24
 
 validation:
   frequency: 1_000
-  image_frequency: 10_000
+  image_frequency: 100_000
 
 # Data args
 datasets:
@@ -34,10 +38,10 @@ datasets:
     batch_size: 16
     shuffle: false
     split: val_Herschel
-  val_Chukotka:
+  val_Lena:
     batch_size: 16
     shuffle: false
-    split: val_Chukotka
+    split: val_Lena
   train:
     batch_size: 16
     shuffle: true

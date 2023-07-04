@@ -1,7 +1,7 @@
 # Model Specification
 model:
-  type: DeepLabv3p
-  backbone: Xception
+  type: UNet
+  width: 16
 
 optimizer:
   type: adamw
@@ -12,7 +12,7 @@ optimizer:
     init_value: 1.e-7
     peak_value: 1.e-3
     warmup_steps: 10_000
-    end_value:  4.e-5
+    end_value:  3.e-4
     decay_steps: 240_000
 
 loss_functions:
@@ -20,10 +20,16 @@ loss_functions:
 
 train:
   steps: 200_000
+  temperature: 0.5
+  unlabelled_weight: 0.1
+  unlabelled_bs: 64
+  teacher_ema: 0.996
+  center_ema: 0.996
+  n_pseudoclasses: 24
 
 validation:
   frequency: 1_000
-  image_frequency: 10_000
+  image_frequency: 50_000
 
 # Data args
 datasets:
@@ -38,5 +44,5 @@ datasets:
   train:
     batch_size: 16
     shuffle: true
-    augment: false
-    split: train_mt
+    augment: true
+    split: train

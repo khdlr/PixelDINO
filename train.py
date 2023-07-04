@@ -18,11 +18,11 @@ import wandb
 from tqdm import tqdm
 
 from munch import munchify
-from lib.data_loading import get_datasets
+from lib.data_loading import get_datasets, get_unlabelled
 from lib import utils, logging, losses
 from lib.config_mod import config
 from lib.metrics import compute_premetrics
-from lib.utils import TrainingState, prep, augment, changed_state, save_state
+from lib.utils import TrainingState, prep, augment, changed_state, save_state, distort
 
 jax.config.update("jax_numpy_rank_promotion", "raise")
 
@@ -48,17 +48,17 @@ def train_step(data, state, key, do_augment=True):
   key_1, key_2, key_3 = jax.random.split(key, 3)
 
   if do_augment:
-    batch = augment(data['train'], key_1
+    batch = augment(data['train'], key_1)
   else:
     batch = prep(data['train'])
   img, mask = batch['s2'], batch['mask']
 
   if 'train_unlabelled' in data:
     batch = data['train_unlabelled']
-    img_u = prep(batch, key_2)['img_1']
+    img_u = prep(batch, key_2)['img']
     mask_u  = jax.nn.sigmoid(model(params, img_u))
-    batch_d = distort({'img_2': img_u, 'mask': mask_u}, key_3)
-    img_d   = batch_d['img_2']
+    batch_d = distort({'img': img_u, 'mask': mask_u}, key_3)
+    img_d   = batch_d['img']
     mask_d  = batch_d['mask']
     mask_d = jnp.where( mask_d > 0.8,  1,
              jnp.where( mask_d < 0.2,  0, 255)).astype(np.uint8)
@@ -120,9 +120,6 @@ if __name__ == '__main__':
   parser.add_argument('-f', '--skip-git-check', action='store_true')
   args = parser.parse_args()
 
-  run_dir = Path(f'runs/{args.name}/')
-  assert not run_dir.exists(), f"Previous run exists at {run_dir}"
-
   train_key = jax.random.PRNGKey(args.seed)
   persistent_val_key = jax.random.PRNGKey(27)
 
@@ -135,6 +132,9 @@ if __name__ == '__main__':
   val_data = {k: datasets[k] for k in datasets if k.startswith('val')}
   trn_data = {k: datasets[k] for k in datasets if not k.startswith('val')}
 
+  if 'train_unlabelled' in config.loss_functions:
+    trn_data['train_unlabelled'] = get_unlabelled(config['datasets']['train']['batch_size'])
+
   S, params = utils.get_model(np.ones([1, 128, 128, 12]))
 
   # Initialize model and optimizer state
@@ -143,7 +143,9 @@ if __name__ == '__main__':
 
   state = TrainingState(params=params, opt=opt_init(params))
 
-  wandb.init(project=f'Thaw Slumps', config=config, name=args.name, group=args.config.stem)
+  wandb.init(project=f'PixelDINO', config=config, name=args.name, group=args.config.stem)
+  run_dir = Path(f'runs/{wandb.run.id}/')
+  assert not run_dir.exists(), f"Previous run exists at {run_dir}"
 
   run_dir.mkdir(parents=True)
   config.run_id = wandb.run.id
@@ -154,7 +156,7 @@ if __name__ == '__main__':
   trn_metrics = defaultdict(list)
   for step in tqdm(range(1, 1+config.train.steps), ncols=80):
     data = jax.tree_map(next, generators)
-    data = {k: {kk: v for kk, v in data[k].items() if kk in {'s2', 'img_1', 'img_2', 'mask'}} for k in data}
+    data = {k: {kk: v for kk, v in data[k].items() if kk in {'s2', 'img', 'mask'}} for k in data}
 
     train_key, subkey = jax.random.split(train_key)
     terms, state = train_step(data, state, subkey, do_augment=config.datasets.train.augment)
@@ -259,7 +261,7 @@ if __name__ == '__main__':
           return 255 * is_edge.astype(np.uint8)
 
         mask_img = mark_edges(mask, 0.5)
-        pred_img = mark_edges(pred, 0.7)
+        pred_img = mark_edges(pred, 0.7 * 255)
         annot = np.stack([
           mask_img,
           pred_img,

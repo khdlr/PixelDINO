@@ -42,14 +42,11 @@ def get_loss_fn(mode):
   return getattr(losses, name)
 
 
-@partial(jax.jit, static_argnums=4)
-def train_step(data, unlabelled, state, key, do_augment=True):
+@jax.jit
+def train_step(unlabelled, state, key):
   _, optimizer = get_optimizer()
 
   key_1a, key_1b, key_2, key_3, key_4 = jax.random.split(key, 5)
-
-  batch = distort(prep(data, key_1a), key_1b)
-  img, mask = batch['s2'], batch['mask']
 
   batch = prep(unlabelled, key_2)
   img_1 = img_2 = batch['img']
@@ -63,16 +60,10 @@ def train_step(data, unlabelled, state, key, do_augment=True):
 
   def get_loss(params):
     terms = {}
-    pred = model(params, img, return_features=False)
     _, feat_2 = model(params, img_2, return_features=True)
 
-    terms['loss_super'] = get_loss_fn('train')(mask, pred)
-
     # Dino-Style loss: feat_1 == "teacher", feat_2 == "student"
-    terms['loss_unlabelled'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
-    terms['loss'] = terms['loss_super'] + \
-        config.train.unlabelled_weight * terms['loss_unlabelled']
-    terms['super_premetrics'] = compute_premetrics(mask, pred)
+    terms['loss'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
 
     return terms['loss'], terms
 
@@ -100,17 +91,8 @@ def train_step(data, unlabelled, state, key, do_augment=True):
 def test_step(batch, state):
     batch = prep(batch)
     img = batch['s2']
-    mask = batch['mask']
-
     pred, features = model(state.teacher, img, return_features=True)
-    loss = get_loss_fn('train')(mask, pred)
-
-    terms = {
-        'loss': loss,
-        'val_premetrics': compute_premetrics(mask, pred),
-    }
-
-    return terms, jax.nn.sigmoid(pred), jax.nn.softmax(features, axis=-1)
+    return jax.nn.softmax(features, axis=-1)
 
 
 if __name__ == '__main__':
@@ -137,8 +119,6 @@ if __name__ == '__main__':
 
   datasets = get_datasets(config['datasets'])
   val_data = {k: datasets[k] for k in datasets if k.startswith('val')}
-  trn_data = datasets['train']
-
   unlabelled_data = get_unlabelled(config['train']['unlabelled_bs'])
 
   S, params = utils.get_model(np.ones([1, 128, 128, 12]))
@@ -150,7 +130,7 @@ if __name__ == '__main__':
   center = jnp.zeros([1, 1, 1, config.train.n_pseudoclasses])
   state = DINOState(params=params, teacher=params, opt=opt_init(params), center=center)
 
-  wandb.init(project=f'PixelDINO', config=config, name=args.name, group=config.train.group)
+  wandb.init(project=f'PixelDINO Unsupervised', config=config, name=args.name, group=config.train.group)
 
   run_dir = Path(f'runs/{wandb.run.id}/')
   assert not run_dir.exists(), f"Previous run exists at {run_dir}"
@@ -160,17 +140,14 @@ if __name__ == '__main__':
   with open(run_dir / 'config.yml', 'w') as f:
       f.write(yaml.dump(config, default_flow_style=False))
 
-  trn_gen = jax.tree_map(iter, trn_data)
   unlabelled_gen = iter(unlabelled_data)
   trn_metrics = defaultdict(list)
   for step in tqdm(range(1, 1+config.train.steps), ncols=80):
-    data = next(trn_gen)
-    data = {'s2': data['s2'], 'mask': data['mask']}
     unlabelled = next(unlabelled_gen)
     unlabelled = {'img': unlabelled['img']}
 
     train_key, subkey = jax.random.split(train_key)
-    terms, state = train_step(data, unlabelled, state, subkey, do_augment=config.datasets.train.augment)
+    terms, state = train_step(unlabelled, state, subkey)
 
     for k in terms:
         trn_metrics[k].append(terms[k])
@@ -184,31 +161,25 @@ if __name__ == '__main__':
     logging.log_metrics(trn_metrics, 'trn', step, do_print=False)
     trn_metrics = defaultdict(list)
 
+    if step not in config.validation.image_steps:
+      continue
+
     for tag, dataset in val_data.items():
+      print(f'Validating on {tag}')
       # Validate
       val_key = persistent_val_key
-      val_metrics = defaultdict(list)
       val_outputs = defaultdict(list)
       for step_test, data in enumerate(dataset):
           val_key, subkey = jax.random.split(val_key, 2)
-          data_inp = {'s2': data['s2'], 'mask': data['mask']}
-          metrics, preds, pseudo_classes = test_step(data_inp, state)
+          data_inp = {'s2': data['s2']}
+          pseudo_classes = jax.device_put(test_step(data_inp, state), jax.devices('cpu')[0])
 
-          for m in metrics:
-            val_metrics[m].append(metrics[m])
-
-          for i in range(preds.shape[0]):
+          for i in range(pseudo_classes.shape[0]):
             key = data['source'][i].decode('utf8')
             val_outputs[key].append({
-              'pred': preds[i],
               'pseudo_classes': pseudo_classes[i],
               **jax.tree_map(lambda x: x[i], data),
             })
-
-      logging.log_metrics(val_metrics, tag, step)
-
-      if step % config.validation.image_frequency != 0:
-        continue
 
       # Save Checkpoint
       save_state(state, run_dir / f'step_{step:07d}.pkl')
@@ -220,10 +191,6 @@ if __name__ == '__main__':
         x_max = max(d['box'][2] for d in data)
 
         weight = np.zeros([y_max, x_max, 1], dtype=np.float64)
-        rgb    = np.zeros([y_max, x_max, 3], dtype=np.float64)
-        mask   = np.zeros([y_max, x_max, 1], dtype=np.float64)
-        pred   = np.zeros([y_max, x_max, 1], dtype=np.float64)
-
         pseudo_classes = np.zeros([y_max, x_max, config.train.n_pseudoclasses])
         window = np.concatenate([
           np.linspace(0, 1, 96),
@@ -233,63 +200,14 @@ if __name__ == '__main__':
 
         for patch in data:
           x0, y0, x1, y1 = patch['box']
-          patch_rgb  = patch['s2'][:, :, [3,2,1]]
-          patch_rgb  = np.clip(patch_rgb, 0, 255)
-          patch_mask = np.where(patch['mask'] == 127, 64, patch['mask'])
-          patch_mask = np.clip(patch_mask, 0, 255)
-          patch_pred = np.clip(255 * patch['pred'], 0, 255)
-
-          patch_rgb = np.asarray(patch_rgb).astype(np.float64)
-          patch_mask = np.asarray(patch_mask).astype(np.float64)
-          patch_pred = np.asarray(patch_pred).astype(np.float64)
-
           weight[y0:y1, x0:x1] += stencil
-          rgb[y0:y1, x0:x1]    += stencil * patch_rgb
-          mask[y0:y1, x0:x1]   += stencil * patch_mask
-          pred[y0:y1, x0:x1]   += stencil * patch_pred
           pseudo_classes[y0:y1, x0:x1] += stencil * patch['pseudo_classes']
 
         weight = np.where(weight == 0, 1, weight)
-        rgb  = np.clip(rgb / weight, 0, 255).astype(np.uint8)
-        mask = np.clip(mask / weight, 0, 255).astype(np.uint8)
-        pred = np.clip(pred / weight, 0, 255).astype(np.uint8)
         pseudo_classes = (pseudo_classes / weight).argmax(axis=-1)
-
-        stacked = np.concatenate([mask, pred, np.zeros_like(mask)], axis=-1)
-        stacked = Image.fromarray(stacked)
-        _, stacked_jpg = mkstemp('.jpg')
-        stacked.save(stacked_jpg)
-
-        @jax.jit
-        def mark_edges(mask, threshold):
-          mask = (mask > threshold).astype(np.float32)
-          if mask.ndim > 2:
-            mask = mask[..., 0]
-          padded = jnp.pad(mask, 1, mode='edge')
-          padded = rearrange(padded, 'H W -> 1 H W 1')
-          min_pooled = -hk.max_pool(-padded, 3, 1, 'VALID')
-          max_pooled = hk.max_pool(padded, 3, 1, 'VALID')
-          is_edge = min_pooled != max_pooled
-          is_edge = rearrange(is_edge, '1 H W 1 -> H W')
-          return 255 * is_edge.astype(np.uint8)
-
-        mask_img = mark_edges(mask, 0.5)
-        pred_img = mark_edges(pred, 0.7 * 255)
-        annot = np.stack([
-          mask_img,
-          pred_img,
-          np.zeros_like(mask_img),
-        ], axis=-1)
-        contour_img = np.where(np.all(annot == 0, axis=-1, keepdims=True), rgb, annot)
-        contour_img = Image.fromarray(contour_img)
-        _, contour_jpg = mkstemp('.jpg')
-        contour_img.save(contour_jpg)
 
         cmap = mpl.colormaps['hsv'].resampled(config.train.n_pseudoclasses)
         colors = np.stack([np.asarray(cmap(i))[:3] for i in range(config.train.n_pseudoclasses)])
         pc_rgb = colors[pseudo_classes]
 
-        wandb.log({f'contour/{name}': wandb.Image(contour_jpg),
-                   f'imgs/{name}': wandb.Image(stacked_jpg),
-                   f'pseudo_class/{name}': wandb.Image(pc_rgb),
-        }, step=step)
+        wandb.log({f'pseudo_class/{name}': wandb.Image(pc_rgb)}, step=step)
