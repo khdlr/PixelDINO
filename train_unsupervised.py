@@ -53,17 +53,37 @@ def train_step(unlabelled, state, key):
   img_2 = distort({'img': img_2}, key_3)['img']
   _, feat_1 = model(state.teacher, img_1, return_features=True)
 
-  center = feat_1.mean(axis=[0, 1, 2], keepdims=True)
-  feat_1 = (feat_1 - state.center) / config.train.temperature
-  feat_1 = jax.nn.softmax(feat_1, axis=-1)
   feat_1 = distort({'features': feat_1}, key_4)['features']
+  if config.train.teacher_norm == 'center':
+    center = feat_1.mean(axis=[0, 1, 2], keepdims=True)
+    feat_1 = (feat_1 - state.center) / config.train.temperature
+    feat_1 = jax.nn.softmax(feat_1, axis=-1)
+
+    c = config.train.center_ema
+    center = c * state.center + (1 - c) * center
+  elif config.train.teacher_norm == 'sinkhorn_knopp':
+    # cf. https://github.com/facebookresearch/dinov2/blob/c3c2683a13cde94d4d99f523cf4170384b00c34c/dinov2/loss/dino_clstoken_loss.py#L36-L62
+    B, H, W, K = feat_1.shape
+    Q = jnp.exp(feat_1 / config.train.temperature)
+    Q = rearrange(Q, 'B H W K -> K (B H W)')  # H W folded into batch dimension
+    Q /= Q.sum()
+
+    for _ in range(3):
+      Q /= Q.sum(axis=1, keepdims=True) * K
+      Q /= Q.sum(axis=0, keepdims=True) * B
+    feat_1 = rearrange(Q * B, 'K (B H W) -> B H W K', B=B, H=H, W=W, K=K)
+
+    # I'm lazy and wanna save some if statements
+    center = state.center
 
   def get_loss(params):
     terms = {}
     _, feat_2 = model(params, img_2, return_features=True)
 
     # Dino-Style loss: feat_1 == "teacher", feat_2 == "student"
-    terms['loss'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
+    terms['loss_dino'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
+
+    terms['loss'] = terms['loss_dino']
 
     return terms['loss'], terms
 
@@ -77,8 +97,7 @@ def train_step(unlabelled, state, key):
   ema_sched = 0.5 - 0.5 * jnp.cos(jnp.pi * progress)
   ema =  (1 - ema_sched) * ema + ema_sched # * 1  # Increases to 1 with cosine schedule
   teacher = jax.tree_map(lambda old, new: ema * old + (1 - ema) * new, state.teacher, new_params)
-  c = config.train.center_ema
-  center = c * state.center + (1 - c) * center
+
   return terms, changed_state(state,
       params=new_params,
       teacher=teacher,
@@ -101,7 +120,6 @@ if __name__ == '__main__':
   parser.add_argument('-s', '--seed', type=int, required=True)
   parser.add_argument('-n', '--name', type=str, required=True)
   parser.add_argument('-f', '--skip-git-check', action='store_true')
-  parser.add_argument('-w', '--unlabelled_weight', type=float)
   parser.add_argument('-t', '--dino_temperature', type=float)
   args = parser.parse_args()
 
@@ -111,8 +129,6 @@ if __name__ == '__main__':
   config.update(munchify(yaml.safe_load(args.config.open())))
   if args.dino_temperature is not None:
     config.train.temperature = args.dino_temperature
-  if args.unlabelled_weight is not None:
-    config.train.unlabelled_weight = args.unlabelled_weight
 
   # initialize data loading
   train_key, subkey = jax.random.split(train_key)

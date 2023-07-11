@@ -74,9 +74,9 @@ def train_step(data, unlabelled, state, key, do_augment=True):
         config.train.unlabelled_weight * terms['loss_unlabelled']
     terms['super_premetrics'] = compute_premetrics(mask, pred)
 
-    return terms['loss'], terms
+    return terms['loss'], (terms, center)
 
-  gradients, terms = jax.grad(get_loss, has_aux=True)(state.params)
+  gradients, (terms, new_center) = jax.grad(get_loss, has_aux=True)(state.params)
   updates, new_opt = optimizer(gradients, state.opt, state.params)
   new_params = optax.apply_updates(state.params, updates)
 
@@ -84,10 +84,10 @@ def train_step(data, unlabelled, state, key, do_augment=True):
   progress = new_opt[0].count / config.train.steps
   ema = config.train.teacher_ema
   ema_sched = 0.5 - 0.5 * jnp.cos(jnp.pi * progress)
-  ema =  (1 - ema_sched) * ema + ema_sched # Increases to 1 with cosine schedule
+  ema =  (1 - ema_sched) * ema + ema_sched # * 1  # Increases to 1 with cosine schedule
   teacher = jax.tree_map(lambda old, new: ema * old + (1 - ema) * new, state.teacher, new_params)
   c = config.train.center_ema
-  center = c * state.center + (1 - c) * center
+  center = c * state.center + (1 - c) * new_center
   return terms, changed_state(state,
       params=new_params,
       teacher=teacher,
@@ -274,7 +274,7 @@ if __name__ == '__main__':
           return 255 * is_edge.astype(np.uint8)
 
         mask_img = mark_edges(mask, 0.5)
-        pred_img = mark_edges(pred, 0.7 * 255)
+        pred_img = mark_edges(pred, 0.7)
         annot = np.stack([
           mask_img,
           pred_img,

@@ -56,15 +56,17 @@ def train_step(data, unlabelled, state, key, do_augment=True):
   img_2 = distort({'img': img_2}, key_3)['img']
   _, feat_1 = model(state.teacher, img_1, return_features=True)
 
-  center = feat_1.mean(axis=[0, 1, 2], keepdims=True)
+  feat_1 = feat_1.mean(axis=[1, 2])
+  center = feat_1.mean(axis=0, keepdims=True)
   feat_1 = (feat_1 - state.center) / config.train.temperature
   feat_1 = jax.nn.softmax(feat_1, axis=-1)
-  feat_1 = distort({'features': feat_1}, key_4)['features']
+  # feat_1 = distort({'features': feat_1}, key_4)['features']
 
   def get_loss(params):
     terms = {}
     pred = model(params, img, return_features=False)
     _, feat_2 = model(params, img_2, return_features=True)
+    feat_2 = feat_2.mean(axis=[1, 2])
 
     terms['loss_super'] = get_loss_fn('train')(mask, pred)
 
@@ -84,7 +86,7 @@ def train_step(data, unlabelled, state, key, do_augment=True):
   progress = new_opt[0].count / config.train.steps
   ema = config.train.teacher_ema
   ema_sched = 0.5 - 0.5 * jnp.cos(jnp.pi * progress)
-  ema =  (1 - ema_sched) * ema + ema_sched # Increases to 1 with cosine schedule
+  ema =  (1 - ema_sched) * ema + ema_sched # * 1  # Increases to 1 with cosine schedule
   teacher = jax.tree_map(lambda old, new: ema * old + (1 - ema) * new, state.teacher, new_params)
   c = config.train.center_ema
   center = c * state.center + (1 - c) * center
@@ -110,7 +112,7 @@ def test_step(batch, state):
         'val_premetrics': compute_premetrics(mask, pred),
     }
 
-    return terms, jax.nn.sigmoid(pred), jax.nn.softmax(features, axis=-1)
+    return terms, jax.nn.sigmoid(pred)
 
 
 if __name__ == '__main__':
@@ -147,7 +149,7 @@ if __name__ == '__main__':
   opt_init, _ = get_optimizer()
   model = S.apply
 
-  center = jnp.zeros([1, 1, 1, config.train.n_pseudoclasses])
+  center = jnp.zeros([1, config.train.n_pseudoclasses])
   state = DINOState(params=params, teacher=params, opt=opt_init(params), center=center)
 
   wandb.init(project=f'PixelDINO', config=config, name=args.name, group=config.train.group)
@@ -192,7 +194,7 @@ if __name__ == '__main__':
       for step_test, data in enumerate(dataset):
           val_key, subkey = jax.random.split(val_key, 2)
           data_inp = {'s2': data['s2'], 'mask': data['mask']}
-          metrics, preds, pseudo_classes = test_step(data_inp, state)
+          metrics, preds = test_step(data_inp, state)
 
           for m in metrics:
             val_metrics[m].append(metrics[m])
@@ -201,7 +203,6 @@ if __name__ == '__main__':
             key = data['source'][i].decode('utf8')
             val_outputs[key].append({
               'pred': preds[i],
-              'pseudo_classes': pseudo_classes[i],
               **jax.tree_map(lambda x: x[i], data),
             })
 
@@ -224,7 +225,6 @@ if __name__ == '__main__':
         mask   = np.zeros([y_max, x_max, 1], dtype=np.float64)
         pred   = np.zeros([y_max, x_max, 1], dtype=np.float64)
 
-        pseudo_classes = np.zeros([y_max, x_max, config.train.n_pseudoclasses])
         window = np.concatenate([
           np.linspace(0, 1, 96),
           np.linspace(0, 1, 96)[::-1],
@@ -247,13 +247,11 @@ if __name__ == '__main__':
           rgb[y0:y1, x0:x1]    += stencil * patch_rgb
           mask[y0:y1, x0:x1]   += stencil * patch_mask
           pred[y0:y1, x0:x1]   += stencil * patch_pred
-          pseudo_classes[y0:y1, x0:x1] += stencil * patch['pseudo_classes']
 
         weight = np.where(weight == 0, 1, weight)
         rgb  = np.clip(rgb / weight, 0, 255).astype(np.uint8)
         mask = np.clip(mask / weight, 0, 255).astype(np.uint8)
         pred = np.clip(pred / weight, 0, 255).astype(np.uint8)
-        pseudo_classes = (pseudo_classes / weight).argmax(axis=-1)
 
         stacked = np.concatenate([mask, pred, np.zeros_like(mask)], axis=-1)
         stacked = Image.fromarray(stacked)
@@ -274,7 +272,7 @@ if __name__ == '__main__':
           return 255 * is_edge.astype(np.uint8)
 
         mask_img = mark_edges(mask, 0.5)
-        pred_img = mark_edges(pred, 0.7 * 255)
+        pred_img = mark_edges(pred, 0.7)
         annot = np.stack([
           mask_img,
           pred_img,
@@ -285,11 +283,6 @@ if __name__ == '__main__':
         _, contour_jpg = mkstemp('.jpg')
         contour_img.save(contour_jpg)
 
-        cmap = mpl.colormaps['hsv'].resampled(config.train.n_pseudoclasses)
-        colors = np.stack([np.asarray(cmap(i))[:3] for i in range(config.train.n_pseudoclasses)])
-        pc_rgb = colors[pseudo_classes]
-
         wandb.log({f'contour/{name}': wandb.Image(contour_jpg),
                    f'imgs/{name}': wandb.Image(stacked_jpg),
-                   f'pseudo_class/{name}': wandb.Image(pc_rgb),
         }, step=step)

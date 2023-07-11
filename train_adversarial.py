@@ -23,17 +23,23 @@ from lib.data_loading import get_datasets, get_unlabelled
 from lib import utils, logging, losses
 from lib.config_mod import config
 from lib.metrics import compute_premetrics
-from lib.utils import DINOState, prep, distort, changed_state, save_state
+from lib.utils import AdversarialState, prep, distort, changed_state, save_state
+from lib.models.discriminator import Discriminator
 
 jax.config.update("jax_numpy_rank_promotion", "raise")
+
 
 def get_optimizer():
   conf = config.optimizer
   schedule = getattr(optax, conf.schedule)(**conf.schedule_args)
-  if conf.type == 'lion':
-    opt_class = lion
-  else:
-    opt_class = getattr(optax, conf.type)
+  opt_class = getattr(optax, conf.type)
+  return opt_class(schedule, **conf.args)
+
+
+def D_optimizer():
+  conf = config.d_optimizer
+  schedule = getattr(optax, conf.schedule)(**conf.schedule_args)
+  opt_class = getattr(optax, conf.type)
   return opt_class(schedule, **conf.args)
 
 
@@ -42,57 +48,51 @@ def get_loss_fn(mode):
   return getattr(losses, name)
 
 
-@partial(jax.jit, static_argnums=4)
-def train_step(data, unlabelled, state, key, do_augment=True):
+@jax.jit
+def train_step(data, unlabelled, state, key):
   _, optimizer = get_optimizer()
 
   key_1a, key_1b, key_2, key_3, key_4 = jax.random.split(key, 5)
 
   batch = distort(prep(data, key_1a), key_1b)
   img, mask = batch['s2'], batch['mask']
-
-  batch = prep(unlabelled, key_2)
-  img_1 = img_2 = batch['img']
-  img_2 = distort({'img': img_2}, key_3)['img']
-  _, feat_1 = model(state.teacher, img_1, return_features=True)
-
-  center = feat_1.mean(axis=[0, 1, 2], keepdims=True)
-  feat_1 = (feat_1 - state.center) / config.train.temperature
-  feat_1 = jax.nn.softmax(feat_1, axis=-1)
-  feat_1 = distort({'features': feat_1}, key_4)['features']
+  img_2 = distort(prep(unlabelled, key_2), key_3)['img']
 
   def get_loss(params):
     terms = {}
-    pred = model(params, img, return_features=False)
-    _, feat_2 = model(params, img_2, return_features=True)
+    pred_true = model(params, img)
+    pred_fake = model(params, img_2)
+    judgement = D(state.D_params, pred_fake)
 
-    terms['loss_super'] = get_loss_fn('train')(mask, pred)
+    terms['loss_super'] = get_loss_fn('train')(mask, pred_true)
+    terms['loss_semi'] = jnp.mean(-jax.nn.log_sigmoid(pred_fake))
 
-    # Dino-Style loss: feat_1 == "teacher", feat_2 == "student"
-    terms['loss_unlabelled'] = optax.softmax_cross_entropy(feat_2, feat_1).mean()
     terms['loss'] = terms['loss_super'] + \
-        config.train.unlabelled_weight * terms['loss_unlabelled']
-    terms['super_premetrics'] = compute_premetrics(mask, pred)
+        config.train.unlabelled_weight * terms['loss_semi']
+    terms['super_premetrics'] = compute_premetrics(mask, pred_true)
 
-    return terms['loss'], terms
+    return terms['loss'], (terms, pred_fake)
 
-  gradients, terms = jax.grad(get_loss, has_aux=True)(state.params)
+  gradients, (terms, pred_fake) = jax.grad(get_loss, has_aux=True)(state.params)
   updates, new_opt = optimizer(gradients, state.opt, state.params)
   new_params = optax.apply_updates(state.params, updates)
 
+  def discriminator_loss(d_params):
+    out_true = D(d_params, jnp.where(mask >= 2, 0, mask).astype(jnp.float32))
+    out_fake = D(d_params, pred_fake)
+    loss = jnp.mean(-jax.nn.log_sigmoid(-out_fake) - jax.nn.log_sigmoid(out_true))
+    return loss
+
+  terms['loss_discriminator'], D_gradients = jax.value_and_grad(discriminator_loss)(state.D_params)
+  updates, D_opt = optimizer(D_gradients, state.D_opt, state.D_params)
+  D_params = optax.apply_updates(state.D_params, updates)
+
   # EMA steps
-  progress = new_opt[0].count / config.train.steps
-  ema = config.train.teacher_ema
-  ema_sched = 0.5 - 0.5 * jnp.cos(jnp.pi * progress)
-  ema =  (1 - ema_sched) * ema + ema_sched # Increases to 1 with cosine schedule
-  teacher = jax.tree_map(lambda old, new: ema * old + (1 - ema) * new, state.teacher, new_params)
-  c = config.train.center_ema
-  center = c * state.center + (1 - c) * center
   return terms, changed_state(state,
       params=new_params,
-      teacher=teacher,
-      center=center,
       opt=new_opt,
+      D_params=D_params,
+      D_opt=D_opt,
   )
 
 
@@ -102,7 +102,7 @@ def test_step(batch, state):
     img = batch['s2']
     mask = batch['mask']
 
-    pred, features = model(state.teacher, img, return_features=True)
+    pred = model(state.params, img)
     loss = get_loss_fn('train')(mask, pred)
 
     terms = {
@@ -110,7 +110,7 @@ def test_step(batch, state):
         'val_premetrics': compute_premetrics(mask, pred),
     }
 
-    return terms, jax.nn.sigmoid(pred), jax.nn.softmax(features, axis=-1)
+    return terms, jax.nn.sigmoid(pred)
 
 
 if __name__ == '__main__':
@@ -120,15 +120,12 @@ if __name__ == '__main__':
   parser.add_argument('-n', '--name', type=str, required=True)
   parser.add_argument('-f', '--skip-git-check', action='store_true')
   parser.add_argument('-w', '--unlabelled_weight', type=float)
-  parser.add_argument('-t', '--dino_temperature', type=float)
   args = parser.parse_args()
 
   train_key = jax.random.PRNGKey(args.seed)
   persistent_val_key = jax.random.PRNGKey(27)
 
   config.update(munchify(yaml.safe_load(args.config.open())))
-  if args.dino_temperature is not None:
-    config.train.temperature = args.dino_temperature
   if args.unlabelled_weight is not None:
     config.train.unlabelled_weight = args.unlabelled_weight
 
@@ -141,14 +138,18 @@ if __name__ == '__main__':
 
   unlabelled_data = get_unlabelled(config['train']['unlabelled_bs'])
 
-  S, params = utils.get_model(np.ones([1, 128, 128, 12]))
+  S, params = utils.get_model(np.ones([1, 64, 64, 12]))
+
+  discriminator = hk.without_apply_rng(hk.transform(Discriminator()))
+  D_params = jax.jit(discriminator.init)(jax.random.PRNGKey(31), np.ones([1, 64, 64, 1]))
+  D = discriminator.apply
 
   # Initialize model and optimizer state
   opt_init, _ = get_optimizer()
   model = S.apply
 
-  center = jnp.zeros([1, 1, 1, config.train.n_pseudoclasses])
-  state = DINOState(params=params, teacher=params, opt=opt_init(params), center=center)
+  state = AdversarialState(params=params, opt=opt_init(params),
+                           D_params=D_params, D_opt=opt_init(D_params))
 
   wandb.init(project=f'PixelDINO', config=config, name=args.name, group=config.train.group)
 
@@ -170,7 +171,7 @@ if __name__ == '__main__':
     unlabelled = {'img': unlabelled['img']}
 
     train_key, subkey = jax.random.split(train_key)
-    terms, state = train_step(data, unlabelled, state, subkey, do_augment=config.datasets.train.augment)
+    terms, state = train_step(data, unlabelled, state, subkey)
 
     for k in terms:
         trn_metrics[k].append(terms[k])
@@ -192,7 +193,7 @@ if __name__ == '__main__':
       for step_test, data in enumerate(dataset):
           val_key, subkey = jax.random.split(val_key, 2)
           data_inp = {'s2': data['s2'], 'mask': data['mask']}
-          metrics, preds, pseudo_classes = test_step(data_inp, state)
+          metrics, preds = test_step(data_inp, state)
 
           for m in metrics:
             val_metrics[m].append(metrics[m])
@@ -201,7 +202,6 @@ if __name__ == '__main__':
             key = data['source'][i].decode('utf8')
             val_outputs[key].append({
               'pred': preds[i],
-              'pseudo_classes': pseudo_classes[i],
               **jax.tree_map(lambda x: x[i], data),
             })
 
@@ -224,7 +224,6 @@ if __name__ == '__main__':
         mask   = np.zeros([y_max, x_max, 1], dtype=np.float64)
         pred   = np.zeros([y_max, x_max, 1], dtype=np.float64)
 
-        pseudo_classes = np.zeros([y_max, x_max, config.train.n_pseudoclasses])
         window = np.concatenate([
           np.linspace(0, 1, 96),
           np.linspace(0, 1, 96)[::-1],
@@ -247,13 +246,11 @@ if __name__ == '__main__':
           rgb[y0:y1, x0:x1]    += stencil * patch_rgb
           mask[y0:y1, x0:x1]   += stencil * patch_mask
           pred[y0:y1, x0:x1]   += stencil * patch_pred
-          pseudo_classes[y0:y1, x0:x1] += stencil * patch['pseudo_classes']
 
         weight = np.where(weight == 0, 1, weight)
         rgb  = np.clip(rgb / weight, 0, 255).astype(np.uint8)
         mask = np.clip(mask / weight, 0, 255).astype(np.uint8)
         pred = np.clip(pred / weight, 0, 255).astype(np.uint8)
-        pseudo_classes = (pseudo_classes / weight).argmax(axis=-1)
 
         stacked = np.concatenate([mask, pred, np.zeros_like(mask)], axis=-1)
         stacked = Image.fromarray(stacked)
@@ -285,11 +282,6 @@ if __name__ == '__main__':
         _, contour_jpg = mkstemp('.jpg')
         contour_img.save(contour_jpg)
 
-        cmap = mpl.colormaps['hsv'].resampled(config.train.n_pseudoclasses)
-        colors = np.stack([np.asarray(cmap(i))[:3] for i in range(config.train.n_pseudoclasses)])
-        pc_rgb = colors[pseudo_classes]
-
         wandb.log({f'contour/{name}': wandb.Image(contour_jpg),
                    f'imgs/{name}': wandb.Image(stacked_jpg),
-                   f'pseudo_class/{name}': wandb.Image(pc_rgb),
         }, step=step)

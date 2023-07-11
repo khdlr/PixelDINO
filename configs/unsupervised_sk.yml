@@ -19,14 +19,15 @@ loss_functions:
   train: bce
 
 train:
-  group: dino
+  group: sinkhorn_knopp
   steps: 300_000
   temperature: 0.5
   unlabelled_bs: 16
   teacher_ema: 0.996
   center_ema: 0.996
   n_pseudoclasses: 48
-  teacher_norm: center
+  teacher_norm: sinkhorn_knopp
+  koleo_weight: 0.0
 
 validation:
   frequency: 1_000

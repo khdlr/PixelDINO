@@ -25,7 +25,14 @@ class DINOState(NamedTuple):
     opt: optax.OptState
 
 
-def changed_state(state, params=None, opt=None, teacher=None, center=None):
+class AdversarialState(NamedTuple):
+    params: hk.Params
+    opt: optax.OptState
+    D_params: hk.Params
+    D_opt: optax.OptState
+
+
+def changed_state(state, params=None, opt=None, teacher=None, center=None, D_params=None, D_opt=None):
   if isinstance(state, TrainingState):
     return TrainingState(
         params=state.params if params is None else params,
@@ -37,6 +44,13 @@ def changed_state(state, params=None, opt=None, teacher=None, center=None):
         teacher=state.teacher if teacher is None else teacher,
         center=state.center if center is None else center,
         opt=state.opt if opt is None else opt,
+    )
+  elif isinstance(state, AdversarialState):
+    return AdversarialState(
+        params=state.params if params is None else params,
+        opt=state.opt if opt is None else opt,
+        D_params=state.D_params if D_params is None else D_params,
+        D_opt=state.D_opt if D_opt is None else D_opt,
     )
 
 

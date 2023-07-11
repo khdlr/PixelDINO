@@ -1,7 +1,7 @@
 # Model Specification
 model:
   type: UNet
-  width: 32
+  width: 16
 
 optimizer:
   type: adamw
@@ -10,27 +10,37 @@ optimizer:
   schedule: warmup_cosine_decay_schedule
   schedule_args:
     init_value: 1.e-7
-    peak_value: 1.e-3
+    peak_value: 2.5e-4
     warmup_steps: 10_000
     end_value:  2.e-4
+    decay_steps: 240_000
+
+d_optimizer:
+  type: adam
+  args: {}
+  schedule: warmup_cosine_decay_schedule
+  schedule_args:
+    init_value: 1.e-7
+    peak_value: 1.e-4
+    warmup_steps: 10_000
+    end_value:  1.e-4
     decay_steps: 240_000
 
 loss_functions:
   train: bce
 
 train:
-  group: dino
-  steps: 300_000
+  group: adversarial_w.1
+  steps: 200_000
   temperature: 0.5
+  unlabelled_weight: 0.1
   unlabelled_bs: 16
   teacher_ema: 0.996
   center_ema: 0.996
-  n_pseudoclasses: 48
-  teacher_norm: center
 
 validation:
   frequency: 1_000
-  image_steps: [10_000, 100_000, 200_000, 300_000]
+  image_frequency: 100_000
 
 # Data args
 datasets:
@@ -42,3 +52,8 @@ datasets:
     batch_size: 16
     shuffle: false
     split: val_Lena
+  train:
+    batch_size: 16
+    shuffle: true
+    augment: true
+    split: train
