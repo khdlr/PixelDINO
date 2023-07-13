@@ -11,12 +11,11 @@ from einops import rearrange
 
 @tf.function
 def prepare(sample):
-  s2 = rearrange(sample['img'], '... (col W) C -> ... W (col C)', col=4, C=3)
+  s2 = rearrange(sample['s2'], '... (col W) 1 -> ... W col', col=4)
 
   out = dict(
     region=sample['region'],
-    source=sample['source'],
-    date=sample['date'],
+    source=sample['mask_source'],
     box=sample['box'],
     s2=s2,
     mask=sample['mask'],
@@ -26,11 +25,12 @@ def prepare(sample):
 
 @tf.function
 def prepare_unlabelled(sample):
-  img = rearrange(sample['img'], '... (col W) C -> ... W (col C)', col=4, C=3)
+  print(list(sample.keys()))
+  s2 = rearrange(sample['s2'], '... (col W) 1 -> ... W col', col=4)
 
   out = dict(
     box=sample['box'],
-    img=img,
+    s2=s2,
   )
   return out
 
@@ -53,9 +53,7 @@ def split(sample):
 
 
 def get_datasets(config_ds):
-  data = tfds.load('rts', shuffle_files=True)
-  if any(config_ds[c]['split'].startswith('unlabelled') for c in config_ds):
-    data.update(tfds.load('rts_unlabelled', shuffle_files=True))
+  data = tfds.load('thaw_slumps/sentinel2')
 
   datasets = {}
   for key in config_ds:
@@ -81,7 +79,7 @@ def get_datasets(config_ds):
 
 
 def get_unlabelled(batch_size):
-  ds = tfds.load('permafrost', shuffle_files=True)['train']
+  ds = tfds.load('thaw_slumps/sentinel2_unlabelled', shuffle_files=True)['train']
   ds = ds.repeat()
   ds = ds.shuffle(500)
   ds = ds.batch(batch_size)

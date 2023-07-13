@@ -52,8 +52,8 @@ def train_step(data, unlabelled, state, key, do_augment=True):
   img, mask = batch['s2'], batch['mask']
 
   batch = prep(unlabelled, key_2)
-  img_1 = img_2 = batch['img']
-  img_2 = distort({'img': img_2}, key_3)['img']
+  img_1 = img_2 = batch['s2']
+  img_2 = distort({'s2': img_2}, key_3)['s2']
   _, feat_1 = model(state.teacher, img_1, return_features=True)
 
   center = feat_1.mean(axis=[0, 1, 2], keepdims=True)
@@ -141,7 +141,7 @@ if __name__ == '__main__':
 
   unlabelled_data = get_unlabelled(config['train']['unlabelled_bs'])
 
-  S, params = utils.get_model(np.ones([1, 128, 128, 12]))
+  S, params = utils.get_model(np.ones([1, 128, 128, 4]))
 
   # Initialize model and optimizer state
   opt_init, _ = get_optimizer()
@@ -167,7 +167,7 @@ if __name__ == '__main__':
     data = next(trn_gen)
     data = {'s2': data['s2'], 'mask': data['mask']}
     unlabelled = next(unlabelled_gen)
-    unlabelled = {'img': unlabelled['img']}
+    unlabelled = {'s2': unlabelled['s2']}
 
     train_key, subkey = jax.random.split(train_key)
     terms, state = train_step(data, unlabelled, state, subkey, do_augment=config.datasets.train.augment)
@@ -216,8 +216,8 @@ if __name__ == '__main__':
 
       for tile, data in val_outputs.items():
         name = Path(tile).stem
-        y_max = max(d['box'][3] for d in data)
-        x_max = max(d['box'][2] for d in data)
+        y_max = max(d['box'][2] for d in data)
+        x_max = max(d['box'][3] for d in data)
 
         weight = np.zeros([y_max, x_max, 1], dtype=np.float64)
         rgb    = np.zeros([y_max, x_max, 3], dtype=np.float64)
@@ -226,16 +226,16 @@ if __name__ == '__main__':
 
         pseudo_classes = np.zeros([y_max, x_max, config.train.n_pseudoclasses])
         window = np.concatenate([
-          np.linspace(0, 1, 96),
-          np.linspace(0, 1, 96)[::-1],
+          np.linspace(0, 1, 192),
+          np.linspace(0, 1, 192)[::-1],
         ]).reshape(-1, 1)
-        stencil = (window * window.T).reshape(192, 192, 1)
+        stencil = (window * window.T).reshape(384, 384, 1)
 
         for patch in data:
-          x0, y0, x1, y1 = patch['box']
-          patch_rgb  = patch['s2'][:, :, [3,2,1]]
+          y0, x0, y1, x1 = patch['box']
+          patch_rgb  = patch['s2'][:, :, [2, 1, 0]]
           patch_rgb  = np.clip(patch_rgb, 0, 255)
-          patch_mask = np.where(patch['mask'] == 127, 64, patch['mask'])
+          patch_mask = np.where(patch['mask'] == 255, 64, np.where(patch['mask'] == 1, 255, 0))
           patch_mask = np.clip(patch_mask, 0, 255)
           patch_pred = np.clip(255 * patch['pred'], 0, 255)
 

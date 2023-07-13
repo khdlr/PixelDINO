@@ -55,10 +55,10 @@ def train_step(data, state, key, do_augment=True):
 
   if 'train_unlabelled' in data:
     batch = data['train_unlabelled']
-    img_u = prep(batch, key_2)['img']
+    img_u = prep(batch, key_2)['s2']
     mask_u  = jax.nn.sigmoid(model(params, img_u))
-    batch_d = distort({'img': img_u, 'mask': mask_u}, key_3)
-    img_d   = batch_d['img']
+    batch_d = distort({'s2': img_u, 'mask': mask_u}, key_3)
+    img_d   = batch_d['s2']
     mask_d  = batch_d['mask']
     mask_d = jnp.where( mask_d > 0.8,  1,
              jnp.where( mask_d < 0.2,  0, 255)).astype(np.uint8)
@@ -135,7 +135,7 @@ if __name__ == '__main__':
   if 'train_unlabelled' in config.loss_functions:
     trn_data['train_unlabelled'] = get_unlabelled(config['datasets']['train']['batch_size'])
 
-  S, params = utils.get_model(np.ones([1, 128, 128, 12]))
+  S, params = utils.get_model(np.ones([1, 128, 128, 4]))
 
   # Initialize model and optimizer state
   opt_init, _ = get_optimizer()
@@ -156,7 +156,7 @@ if __name__ == '__main__':
   trn_metrics = defaultdict(list)
   for step in tqdm(range(1, 1+config.train.steps), ncols=80):
     data = jax.tree_map(next, generators)
-    data = {k: {kk: v for kk, v in data[k].items() if kk in {'s2', 'img', 'mask'}} for k in data}
+    data = {k: {kk: v for kk, v in data[k].items() if kk in {'s2', 'mask'}} for k in data}
 
     train_key, subkey = jax.random.split(train_key)
     terms, state = train_step(data, state, subkey, do_augment=config.datasets.train.augment)
@@ -173,9 +173,7 @@ if __name__ == '__main__':
     logging.log_metrics(trn_metrics, 'trn', step, do_print=False)
     trn_metrics = defaultdict(list)
     # Save Checkpoint
-    save_state(state, run_dir / f'step_{step:07d}.pkl')
     save_state(state, run_dir / f'latest.pkl')
-
     for tag, dataset in val_data.items():
       # Validate
       val_key = persistent_val_key
@@ -200,6 +198,8 @@ if __name__ == '__main__':
 
       if step % config.validation.image_frequency != 0:
         continue
+
+      save_state(state, run_dir / f'step_{step:07d}.pkl')
 
       for tile, data in val_outputs.items():
         name = Path(tile).stem

@@ -19,7 +19,7 @@ loss_functions:
   train: bce
 
 train:
-  group: dino_.996->1
+  group: dino_L2A
   steps: 200_000
   temperature: 0.5
   unlabelled_weight: 0.1
@@ -30,7 +30,7 @@ train:
 
 validation:
   frequency: 1_000
-  image_frequency: 100_000
+  image_frequency: 50_000
 
 # Data args
 datasets:

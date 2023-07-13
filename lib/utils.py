@@ -104,10 +104,6 @@ def prep(batch, augment_key=None):
   subkeys = jax.random.split(augment_key, batch_size)
   transformation = jax.vmap(chain)
   outputs = transformation(subkeys, batch)
-  if 'mask' in outputs:
-    mask = outputs['mask']
-    mask = jnp.where(mask == 255, 1, jnp.where(mask == 127, 255, 0))
-    outputs['mask'] = mask
 
   return outputs
 
