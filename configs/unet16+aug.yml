@@ -20,10 +20,11 @@ loss_functions:
 
 train:
   steps: 200_000
+  group: L2A_nodino
 
 validation:
   frequency: 1_000
-  image_frequency: 100_000
+  image_frequency: 50_000
 
 # Data args
 datasets:

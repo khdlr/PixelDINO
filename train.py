@@ -143,7 +143,7 @@ if __name__ == '__main__':
 
   state = TrainingState(params=params, opt=opt_init(params))
 
-  wandb.init(project=f'PixelDINO', config=config, name=args.name, group=args.config.stem)
+  wandb.init(project=f'PixelDINO', config=config, name=args.name, group=config.train.group)
   run_dir = Path(f'runs/{wandb.run.id}/')
   assert not run_dir.exists(), f"Previous run exists at {run_dir}"
 
