@@ -1,0 +1,48 @@
+[project]
+name = "PixelDINO"
+version = "0.1.0"
+description = " Semi-supervised RTS segmentation "
+authors = [
+    { name = "Konrad Heidler", email = "k.heidler@tum.de" }
+]
+dependencies = [
+    "jax[cuda12_pip]>=0.4.25",
+    "tqdm>=4.66.2",
+    "matplotlib>=3.8.3",
+    "wandb>=0.16.4",
+    "optax>=0.2.1",
+    "einops>=0.7.0",
+    "cartopy>=0.22.0",
+    "contextily>=1.6.0",
+    "rasterio>=1.3.9",
+    "augmax>=0.3.2",
+    "ipython>=8.22.2",
+    "jax-cuda12-plugin>=0.4.25",
+    "tensorflow>=2.16.1",
+    "tensorflow-datasets>=4.9.4",
+    "pandas>=2.2.1",
+    "dm-haiku>=0.0.12",
+    "munch>=4.0.0",
+]
+readme = "README.md"
+requires-python = ">= 3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = []
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ghsl"]
+
+[[tool.rye.sources]]
+name = "jax"
+# url = "https://jorenham.github.io/jax_pep503/"
+url = "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html"
+type = "find-links"  # this is implied

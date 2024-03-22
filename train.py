@@ -203,24 +203,24 @@ if __name__ == '__main__':
 
       for tile, data in val_outputs.items():
         name = Path(tile).stem
-        y_max = max(d['box'][3] for d in data)
-        x_max = max(d['box'][2] for d in data)
+        y_max = max(d['box'][2] for d in data)
+        x_max = max(d['box'][3] for d in data)
 
         weight = np.zeros([y_max, x_max, 1], dtype=np.float64)
         rgb    = np.zeros([y_max, x_max, 3], dtype=np.float64)
         mask   = np.zeros([y_max, x_max, 1], dtype=np.float64)
         pred   = np.zeros([y_max, x_max, 1], dtype=np.float64)
         window = np.concatenate([
-          np.linspace(0, 1, 96),
-          np.linspace(0, 1, 96)[::-1],
+          np.linspace(0, 1, 192),
+          np.linspace(0, 1, 192)[::-1],
         ]).reshape(-1, 1)
-        stencil = (window * window.T).reshape(192, 192, 1)
+        stencil = (window * window.T).reshape(384, 384, 1)
 
         for patch in data:
-          x0, y0, x1, y1 = patch['box']
-          patch_rgb  = patch['s2'][:, :, [3,2,1]]
+          y0, x0, y1, x1 = patch['box']
+          patch_rgb  = patch['s2'][:, :, [2, 1, 0]]
           patch_rgb  = np.clip(patch_rgb, 0, 255)
-          patch_mask = np.where(patch['mask'] == 127, 64, patch['mask'])
+          patch_mask = np.where(patch['mask'] == 255, 64, np.where(patch['mask'] == 1, 255, 0))
           patch_mask = np.clip(patch_mask, 0, 255)
           patch_pred = np.clip(255 * patch['pred'], 0, 255)
 

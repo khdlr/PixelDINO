@@ -7,6 +7,7 @@ from tqdm import tqdm
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from einops import rearrange
+from .config_mod import config
 
 
 @tf.function
@@ -94,12 +95,17 @@ def get_unlabelled(batch_size):
 
 
 if __name__ == '__main__':
-  config = {'unlabelled': {
-    'batch_size': 16,
-    'shuffle': True,
-    'split': 'unlabelled'
-  }}
+  import argparse
+  from pathlib import Path
+  from munch import munchify
+  import yaml
+  import jax
 
-  dataset = get_datasets(config)['unlabelled']
+  parser = argparse.ArgumentParser(prog="Permafrost SSL Data Loading Test script")
+  parser.add_argument('config', type=Path)
+  args = parser.parse_args()
+  config.update(munchify(yaml.safe_load(args.config.open())))
+  dataset = get_datasets(config.datasets)['train']
   for i in tqdm(dataset):
-    pass
+    data = i['s2']
+    print(data.shape, data.min(), data.max())

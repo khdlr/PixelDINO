@@ -146,7 +146,7 @@ def distort(batch, augment_key):
         augmax.Rotate90(),
         augmax.Rotate(),
         augmax.Warp(coarseness=16, strength=2),
-        augmax.RandomSizedCrop(192, 192, zoom_range=(1.0, 2.0)),
+        augmax.RandomSizedCrop(384, 384, zoom_range=(1.0, 2.0)),
         augmax.RandomGamma(p=1., range=[0.75, 1.33]),
         augmax.RandomBrightness(p=1.),
         augmax.RandomContrast(p=1.),
